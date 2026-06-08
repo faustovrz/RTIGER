@@ -88,21 +88,43 @@ function forward(
     logA::Array,
     logpsi::Array,
 )
-    alpha = -Inf * ones(s, T)
-    alpha[:, r] = logPI + logPSI[:, r]
-    b = diag(logA)
-    B = logA - Diagonal(logA) - Inf * Diagonal(vec(ones(s, 1)))
-    for t = r+1:2*r-1
-        alpha[:, t] = logpsi[:, t] + b + alpha[:, t-1]
+    alpha = fill(-Inf, s, T)
+    @views alpha[:, r] .= vec(logPI) .+ logPSI[:, r]
+    # Allocation-free recursion: scalar log-sum-exp over the s states, written
+    # in place. Arithmetic matches the original logspacesum/logsum exactly
+    # (max-shift + log1p; the single arg-max term is excluded from the sum).
+    @inbounds for t = (r+1):(2*r-1), k = 1:s
+        alpha[k, t] = logpsi[k, t] + logA[k, k] + alpha[k, t-1]
     end
-    for t = 2*r:T-r+1
-        alpha[:, t] = logspacesum(
-            logpsi[:, t] + b + alpha[:, t-1],
-            logPSI[:, t] + logsum(Array((B .+ alpha[:, t-r])')),
-        )
+    @inbounds for t = (2*r):(T-r+1)
+        for k = 1:s
+            # "stay" in state k (diagonal transition)
+            stay = logpsi[k, t] + logA[k, k] + alpha[k, t-1]
+            # "enter" state k from any i != k, r positions back
+            maxv = -Inf; amax = 0
+            for i = 1:s
+                if i != k
+                    x = logA[i, k] + alpha[i, t-r]
+                    if x > maxv; maxv = x; amax = i; end
+                end
+            end
+            enter = -Inf
+            if maxv != -Inf
+                acc = 0.0
+                for i = 1:s
+                    if i != k && i != amax
+                        acc += exp(logA[i, k] + alpha[i, t-r] - maxv)
+                    end
+                end
+                enter = logPSI[k, t] + maxv + log1p(acc)
+            end
+            # logaddexp(stay, enter)
+            m  = stay > enter ? stay : enter
+            mn = stay > enter ? enter : stay
+            alpha[k, t] = m == -Inf ? -Inf : m + log1p(exp(mn - m))
+        end
     end
     return alpha
-
 end
 
 ## Backward
@@ -125,16 +147,37 @@ function backward(
     logA::Array,
     logpsi::Array,
 )
-    beta = -Inf * ones(s, T)
-    beta[:, (T-r+1):T] = logPSI[:, (T+1):(T+r)]
-    b = diag(logA)
-    B = logA - Diagonal(logA) - Inf * Diagonal(vec(ones(s, 1)))
-    for i = 0:T-2*r
+    beta = fill(-Inf, s, T)
+    @views beta[:, (T-r+1):T] .= logPSI[:, (T+1):(T+r)]
+    # Allocation-free recursion mirroring `forward` (see notes there).
+    @inbounds for i = 0:(T-2*r)
         t = T - r - i
-        beta[:, t] = logspacesum(
-            logpsi[:, t+1] + b + beta[:, t+1],
-            logsum(B .+ (logPSI[:, t+r] + beta[:, t+r])'),
-        )
+        for j = 1:s
+            # "stay" in state j (diagonal transition)
+            stay = logpsi[j, t+1] + logA[j, j] + beta[j, t+1]
+            # "leave" state j to any k != j, r positions ahead
+            maxv = -Inf; amax = 0
+            for k = 1:s
+                if k != j
+                    x = logA[j, k] + logPSI[k, t+r] + beta[k, t+r]
+                    if x > maxv; maxv = x; amax = k; end
+                end
+            end
+            leave = -Inf
+            if maxv != -Inf
+                acc = 0.0
+                for k = 1:s
+                    if k != j && k != amax
+                        acc += exp(logA[j, k] + logPSI[k, t+r] + beta[k, t+r] - maxv)
+                    end
+                end
+                leave = maxv + log1p(acc)
+            end
+            # logaddexp(stay, leave)
+            m  = stay > leave ? stay : leave
+            mn = stay > leave ? leave : stay
+            beta[j, t] = m == -Inf ? -Inf : m + log1p(exp(mn - m))
+        end
     end
     return beta
 end
