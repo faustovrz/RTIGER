@@ -224,24 +224,29 @@ function zeta(
     r::Integer,
 )
     (s, T) = size(logalpha)
-    zeta = -Inf * ones(T, s, s)
-    #Calculation of the logarithm of the zeta values, exactly according to the equations of the paper
-    for j = 1:s
-        for k = 1:s
-            if j != k
-                zeta[r+1:T-r+1, j, k] =
-                    logalpha[j, r:T-r] .+ logA[j, k] .+ logbeta[k, 2*r:T] .+
-                    logPSI[k, 2*r:T]
-            else
-                zeta[r+1:T-r+1, j, k] =
-                    logalpha[k, r:T-r] .+ logA[k, k] .+ logpsi[k, r+1:T-r+1] .+
-                    logbeta[k, r+1:T-r+1]
+    zeta = fill(-Inf, T, s, s)
+    # Fill the band in place with scalar loops (t innermost = contiguous in the
+    # T x s x s column-major array), avoiding the per-slice broadcast temps.
+    # Index mapping and left-to-right sum order match the original exactly.
+    @inbounds for k = 1:s, j = 1:s
+        if j != k
+            for t = (r+1):(T-r+1)
+                zeta[t, j, k] = logalpha[j, t-1] + logA[j, k] +
+                                logbeta[k, t+r-1] + logPSI[k, t+r-1]
+            end
+        else
+            for t = (r+1):(T-r+1)
+                zeta[t, k, k] = logalpha[k, t-1] + logA[k, k] +
+                                logpsi[k, t] + logbeta[k, t]
             end
         end
     end
-    #Normalisation and exponential
+    # Normalisation and exponential, in place (exp(-Inf - PO) = 0).
     PO = maximum(zeta)
-    return exp.(zeta .- PO)
+    @inbounds @simd for idx in eachindex(zeta)
+        zeta[idx] = exp(zeta[idx] - PO)
+    end
+    return zeta
 end
 
 ## Gamma
@@ -273,16 +278,30 @@ function gamma(
     gammar = exp.(gammar)
     gammar = gammar ./ sum(gammar)
     gam[:, 1:rigidity] = repeat(gammar, 1, rigidity)
+    # Reused buffers (allocated once, not per state) replace the per-k
+    # zeta[:,:,k] / z[:,i] slice copies. L[t] = sum_{j!=k} zeta[t,j,k];
+    # M = cumsum(L); Mminus is M shifted back by r (see verschobenGamma).
+    L = Vector{Float64}(undef, T)
+    M = Vector{Float64}(undef, T)
     for k = 1:nstates
-        z = zeta[:, :, k] #Save the zeta values for alle observation points and for all states
-        i = findall(!isequal(k), 1:nstates)
-        z = z[:, i]
-        L = sum(z, dims = 2)
-        M = cumsum(L, dims = 1)
-        Mminus = verschobenGamma(M, rigidity)
-        gam[k, rigidity+1:T-rigidity+1] =
-            zeta[rigidity+1:T-rigidity+1, k, k] + M[rigidity+1:T-rigidity+1] -
-            Mminus[rigidity+1:T-rigidity+1]
+        @inbounds for t = 1:T
+            acc = 0.0
+            for j = 1:nstates
+                if j != k
+                    acc += zeta[t, j, k]
+                end
+            end
+            L[t] = acc
+        end
+        run = 0.0
+        @inbounds for t = 1:T
+            run += L[t]
+            M[t] = run
+        end
+        @inbounds for t = (rigidity+1):(T-rigidity+1)
+            Mm = t <= 2*rigidity ? M[rigidity] : M[t-rigidity]
+            gam[k, t] = zeta[t, k, k] + M[t] - Mm
+        end
     end
     gam[:, T-rigidity+2:T] = repeat(gam[:, T-rigidity+1], 1, rigidity - 1)
     gam = gam ./ sum(gam, dims = 1)
@@ -419,7 +438,10 @@ function emissionMultiple(
     anew = zeros(nstates, 1)
     bnew = zeros(nstates, 1)
     for i = 1:nstates
-        m[i] = empmean(O, gamma, i)
+        # Group markers by distinct (k,n) once (O(T)); the mean and the Optim
+        # objective below then cost O(#pairs) instead of O(T) per evaluation.
+        ks, ns, ws, sumk, sumn = emissionStats(O, gamma, i)
+        m[i] = sumk / sumn        # NaN when sumn == 0, handled below as before
         if isnan(m[i])
             m[i] = alpha_old[i] / (alpha_old[i] + beta_old[i])
             anew[i] = alpha_old[i]
@@ -446,7 +468,16 @@ function emissionMultiple(
             if tau[i] > 100
                 tau[i] = 100
             end
-            Q(t) = expMultiple(t, gamma, O, m[i], i)
+            # Same objective as before, summed over distinct (k,n) pairs with
+            # their accumulated gamma weights -> O(#pairs) per Optim evaluation.
+            mi = m[i]
+            Q = function (t)
+                acc = 0.0
+                @inbounds for p = 1:length(ws)
+                    acc += ws[p] * logpdf(BetaBinomial(ns[p], t * mi, t * (1 - mi)), ks[p])
+                end
+                return acc
+            end
             res = optimize(
                 t -> -Q(first(t)),
                 max(0, tau[i] - 100),
@@ -462,65 +493,48 @@ function emissionMultiple(
 end
 
 """
-    empmean(O::AbstractDict, gamma::AbstractDict, state::Integer)
-Auxilary function for the update of the emission distribution;
-    Calculation of the gamma weighted empirical mean of the observations
-# Arguments
-- `O::AbstractDict`: Dict with the observations
-- `gamma::AbstractDict`: Dict with the gamma values
-- `state::Integer`: current state
+    emissionStats(O::AbstractDict, gamma::AbstractDict, state::Integer)
+Auxilary function for the update of the emission distribution. Aggregates the
+gamma-weighted observations for `state` by distinct (k, n) value. Replaces the
+former `empmean` + `expMultiple`: their per-position O(T) work (rebuilding T
+BetaBinomial objects on every Optim evaluation) is the dominant cost of the
+whole EM, while the number of distinct (k, n) pairs is tiny for low-coverage
+genotyping data.
 # Return
-- The gamma weighted empirical mean
+- `(ks, ns, ws, sumk, sumn)`: for each distinct pair, the count `ks`, total
+    `ns`, and summed gamma weight `ws`; plus the weighted totals `sumk`, `sumn`
+    used for the empirical mean `sumk / sumn`.
 """
-function empmean(O::AbstractDict, gamma::AbstractDict, state::Integer)
-    nS = length(O)
-    nom = zeros(1, 1)
-    denom = zeros(1, 1)
+function emissionStats(O::AbstractDict, gamma::AbstractDict, state::Integer)
+    W = Dict{Tuple{Int,Int},Float64}()
+    sumk = 0.0
+    sumn = 0.0
     for s in keys(O)
         for c in keys(O[s])
             Oc = O[s][c]
             gammac = gamma[s][c]
-            k = Oc[:, 1]
-            n = Oc[:, 2]
-            za = sum(k .* gammac[state, :])
-            ne = sum(n .* gammac[state, :])
-            nom = [nom; za]
-            denom = [denom; ne]
+            @inbounds for t = 1:size(Oc, 1)
+                kk = Oc[t, 1]
+                nn = Oc[t, 2]
+                w = gammac[state, t]
+                W[(kk, nn)] = get(W, (kk, nn), 0.0) + w
+                sumk += kk * w
+                sumn += nn * w
+            end
         end
     end
-    nom = nom[2:size(nom)[1], :]
-    denom = denom[2:size(denom)[1], :]
-    m = sum(nom) / sum(denom)
-    return m
-end
-
-"""
-    expMultiple(t, G::AbstractDict, Ob::AbstractDict, m, state::Intger)
-Auxilary function for the update of the emission distribution;
-    the function to be maximized
-# Arguments
-- `t`: the depedent variable
-- `G::AbstractDict`: a Dict with the gamma values
-- `Ob::AbstractDict`: a Dict with the observations
-- `m`: the gamma weighted empirical mean (result of the empmean function)
-- `state::Integer`: the current state
-"""
-function expMultiple(t, G::AbstractDict, Ob::AbstractDict, m, state::Integer)
-    zwe = zeros(1, 1)
-    for s in keys(Ob)
-        for c in keys(Ob[s])
-            Oc = Ob[s][c]
-            gammac = G[s][c]
-            k = Oc[:, 1]
-            n = Oc[:, 2]
-            zw = sum(
-                gammac[state, :] .*
-                logpdf.(BetaBinomial.(n, t * m, t * (1 - m)), k),
-            )
-            zwe = [zwe; zw]
-        end
+    np = length(W)
+    ks = Vector{Int}(undef, np)
+    ns = Vector{Int}(undef, np)
+    ws = Vector{Float64}(undef, np)
+    j = 0
+    for ((kk, nn), w) in W
+        j += 1
+        ks[j] = kk
+        ns[j] = nn
+        ws[j] = w
     end
-    return sum(zwe)
+    return ks, ns, ws, sumk, sumn
 end
 
 
