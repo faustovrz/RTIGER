@@ -533,30 +533,29 @@ The viterbi algorithm for one observation sequence
 """
 function viterbi(PI::Array, PSI::Array, psi::Array, A::Array, r::Integer)
 
-    a = diag(A)
     (s, T) = size(psi)
-    phi = -Inf*ones(s,T)
+    phi = fill(-Inf, s, T)
     b = Array{Int}(undef, s, T)
-    phi[:, r] = PSI[:, r] .+ PI
-    b[:, 1:r] = repeat(collect(1:s), 1,r)
-    # for t=r+1:2*r
-    #     phi[:,t]= psi[:, t] + a + phi[:, t-1]
-    # end
-    for t = r+1:T
-        d = psi[:, t] + a + phi[:, t-1]
-        nd = A .+ PSI[:, t]' .+ phi[:, t-r]
-        indexInf = findall(x -> x == -Inf, Diagonal(nd))
-        if length(indexInf) > 0
-            for i in indexInf
-                nd[i] = 0
-            end
-        end
-        nd = nd - Diagonal(nd)
-        nd = nd + Diagonal(d)
-        (p, i) = findmax(nd, dims = 1)
-        phi[:, t] = p'
+    @views phi[:, r] .= PSI[:, r] .+ vec(PI)
+    b[:, 1:r] = repeat(collect(1:s), 1, r)
+    # Allocation-free max-product step. For each target state j the candidates
+    # are: stay in j (diagonal, uses phi[j,t-1]) or enter j from i!=j r steps
+    # back. findmax(dims=1) tie-break (first row achieving the max) is matched
+    # by scanning i = 1:s and replacing only on strict >.
+    @inbounds for t = (r+1):T
         for j = 1:s
-            b[j, t] = i[j][1]
+            # candidate value of entering target j from row i
+            cand(i) = i == j ? (psi[j, t] + A[j, j] + phi[j, t-1]) :
+                               (A[i, j] + PSI[j, t] + phi[i, t-r])
+            best = cand(1); bestidx = 1          # seed at row 1 (findmax tie-break)
+            for i = 2:s
+                val = cand(i)
+                if val > best
+                    best = val; bestidx = i
+                end
+            end
+            phi[j, t] = best
+            b[j, t] = bestidx
         end
     end
     v = Vector{Int}(undef, T)
