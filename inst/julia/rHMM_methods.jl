@@ -27,12 +27,21 @@ function getlogpsi(
     b = [1.9; 2; 0.1],
 )
     T = size(observations)[1]
-    k = observations[:, 1]
-    n = observations[:, 2]
     s = length(a)
-    logpsi = zeros(s, T)
-    for i = 1:s
-        logpsi[i, :] = logpdf.(BetaBinomial.(n, a[i], b[i]), k)
+    logpsi = Matrix{Float64}(undef, s, T)
+    # Memoize logpdf over distinct (k, n) pairs. With low-coverage genotyping
+    # data only a handful of pairs occur, so this collapses ~T*s logpdf
+    # evaluations to a few dozen. Same logpdf call -> values bit-identical.
+    cache = Dict{Tuple{Int,Int},Vector{Float64}}()
+    @inbounds for t = 1:T
+        k = observations[t, 1]
+        n = observations[t, 2]
+        v = get!(cache, (k, n)) do
+            Float64[logpdf(BetaBinomial(n, a[i], b[i]), k) for i = 1:s]
+        end
+        for i = 1:s
+            logpsi[i, t] = v[i]
+        end
     end
     return logpsi
 end
@@ -52,15 +61,19 @@ function productpsi(psi::Array, r::Integer)
     # number of states and observations
     (k, T) = size(psi)
     PSI = zeros(k, T + r)
-    PSI[:, 1] = psi[:, 1]
-    for t = 2:r
-        PSI[:, t] = PSI[:, t-1] + psi[:, t]
-    end
-    for t = r+1:T
-        PSI[:, t] = PSI[:, t-1] + psi[:, t] - psi[:, t-r]
-    end
-    for t = T+1:T+r-1
-        PSI[:, t] = PSI[:, t-1] - psi[:, t-r]
+    # In-place sliding-window cumulative sum, per state (column T+r stays 0,
+    # as in the original). Same arithmetic order, bit-identical.
+    @inbounds for i = 1:k
+        PSI[i, 1] = psi[i, 1]
+        for t = 2:r
+            PSI[i, t] = PSI[i, t-1] + psi[i, t]
+        end
+        for t = r+1:T
+            PSI[i, t] = PSI[i, t-1] + psi[i, t] - psi[i, t-r]
+        end
+        for t = T+1:T+r-1
+            PSI[i, t] = PSI[i, t-1] - psi[i, t-r]
+        end
     end
     return PSI
 end
