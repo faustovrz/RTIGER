@@ -1,0 +1,11 @@
+# Local scratch: benchmark inputs, papers, experiments — not part of the package
+agent/
+
+# OS / R session cruft
+.DS_Store
+.RData
+.Rhistory
+.Rproj.user
+
+# Large local artifacts (fitted objects, session dumps) — keep out of git
+results/
