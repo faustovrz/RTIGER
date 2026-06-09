@@ -9,3 +9,6 @@ agent/
 
 # Large local artifacts (fitted objects, session dumps) — keep out of git
 results/
+
+# Benchmark/dev scaffolding — scratch, not package content
+dev/
