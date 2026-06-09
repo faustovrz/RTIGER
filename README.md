@@ -1,5 +1,10 @@
 # Quick Guide to RTIGER
 
+> **This is a performance fork of RTIGER** (`faustovrz/RTIGER`) focused on
+> scaling the method to large populations. See [0. Optimization](#optimization).
+
+0.[Optimization (this fork)](#optimization)
+
 1.[Introduction](#Introduction)
 
 2.[Installation](#Installation)
@@ -20,6 +25,25 @@
 5.[RTIGER Output](#RTIGER)
 
 
+## Optimization
+
+**This repository is a performance fork of [RTIGER](https://github.com/rfael0cm/RTIGER)**
+(`faustovrz/RTIGER`, branch `optimize-julia-core`), created to run RTIGER on
+**large populations** (target: ~1400 samples × ~50 000 markers), where the
+upstream version is too slow and exhausts memory.
+
+The fork rewrites the Julia EM core to be **faster** (~40–1500× depending on
+stage; the emission M-step alone is ~1500×) and to use **constant peak memory in
+the number of samples** (projected ~33 GB → ~3.6 GB at 1400 samples), and adds an
+opt-in per-iteration **progress log** (ETA) for long fits. **The model, the joint
+fit, and the outputs are unchanged** — the optimizations preserve the arithmetic
+and are validated bit-identical against the original.
+
+➡ **Full details, techniques, and benchmarks: [`optimization.md`](optimization.md).**
+
+The sections below are the original RTIGER usage guide and apply unchanged.
+
+<!-- ################################################################################ -->
 ## Introduction
 Accurate identification of meiotic crossing-over sites (COs) is essential for correct genotyping of recombining samples. RTIGER is a method for predicting genome-wide COs using allele-counts at pre-defined SNP marker positions. RTIGER trains a Hidden Markov Model (HMM) where genomic states (homozygous parent_1, homozygous parent_2 or heterozygous) correspond to the hidden state and the allele-counts as the observed variable. COs are identified as transitions in the HMM state.
 
