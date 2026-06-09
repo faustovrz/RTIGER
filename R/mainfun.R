@@ -20,7 +20,18 @@
 #' @param post.processing Logical value. Whether to run an extra step that fine maps the segment borthers. Default TRUE
 #' @param specific Logical value to specify which samples to take.
 #' @param save.results Logical value, whether to generate and save the plots and igv files.
-#' @param verbose Logical, whether to print info to console.
+#' @param verbose Logical, whether to print info to console. When TRUE and a
+#'   progress log is active, the per-EM-iteration progress records are also
+#'   echoed to the console after the fit returns.
+#' @param progress_log controls the per-EM-iteration progress log
+#'   (iteration/max, convergence delta, elapsed, per-iteration time, ETA upper
+#'   bound), flushed each iteration so it can be tailed live to estimate an ETA.
+#'   NULL/FALSE (default) disables it and preserves current behavior exactly
+#'   (the fit is unaffected; this is logging only, and the default is unchanged
+#'   regardless of \code{verbose}). A character path writes the log there; TRUE
+#'   is a convenience sentinel for \code{file.path(outputdir, "fit_progress.log")}.
+#'   ETA<= is an upper bound since the EM usually converges (delta<eps) before
+#'   max.iter.
 #' @return Matrix m x n. M number of samples and N chromosomes.
 #'
 #' @return RTIGER object
@@ -29,7 +40,8 @@
 #' max_rigidity = 2^9, average_coverage = NULL,
 #' crossovers_per_megabase = NULL, trace = FALSE,
 #' tiles = 4e5, all = TRUE, random = FALSE, specific = FALSE,
-#' nsamples = 20, post.processing = TRUE, save.results = TRUE, verbose = TRUE)
+#' nsamples = 20, post.processing = TRUE, save.results = TRUE, verbose = TRUE,
+#' progress_log = NULL)
 #'
 #' @examples
 #'\dontrun{
@@ -71,7 +83,8 @@ RTIGER = function(expDesign,
                   nsamples = 20,
                   post.processing = TRUE,
                   save.results = TRUE,
-                  verbose = TRUE){
+                  verbose = TRUE,
+                  progress_log = NULL){
   # Checks
   if(any(seqlengths < tiles)) stop("Your tiling distance is larger than some of your chromosomes. Reduce the tiling parameter.\n")
   if(is.null(rigidity)) stop("Rigidity must be specified. This is a data specific parameter. Check vignette.\n")
@@ -87,6 +100,11 @@ RTIGER = function(expDesign,
     requireNamespace("Gviz")
     requireNamespace("rtracklayer")
   }
+  # Resolve the optional progress_log sentinel here, where outputdir is known:
+  # TRUE -> <outputdir>/fit_progress.log (or tempdir() if no outputdir);
+  # FALSE/NULL -> off; a string is used as-is. Kept orthogonal to `verbose`.
+  if(isTRUE(progress_log)) progress_log = file.path(if(is.null(outputdir)) tempdir() else outputdir, "fit_progress.log")
+
   post_post.processing = post.processing
   if(autotune){
     post_post.processing = post.processing
@@ -120,7 +138,9 @@ RTIGER = function(expDesign,
               random = random,
               specific = specific,
               nsamples = nsamples,
-              post.processing = post.processing
+              post.processing = post.processing,
+              progress_log = progress_log,
+              verbose = verbose
               )
   if(autotune){
     if(verbose) cat("Optimizing the R parameter.\n")
@@ -139,7 +159,9 @@ RTIGER = function(expDesign,
                 random = random,
                 specific = specific,
                 nsamples = nsamples,
-                post.processing = post_post.processing
+                post.processing = post_post.processing,
+                progress_log = progress_log,
+                verbose = verbose
     )
 
   }

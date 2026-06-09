@@ -9,12 +9,23 @@
 #' @param specific if all FALSE use specific samples.
 #' @param nsamples if random TRUE, how many samples to use.
 #' @param post.processing logical value, whether to run post.processing process.
+#' @param progress_log optional file path. When non-NULL, Julia appends one
+#'   newline-terminated record per EM iteration (iter/max, delta, eps, elapsed,
+#'   per_iter, ETA<=) to this file, flushed each iteration so it can be tailed
+#'   live for an ETA. NULL (default) disables it (Julia receives "" and writes
+#'   nothing) — behavior is then identical to before. This is logging only and
+#'   does not affect the fit. Note ETA<= is an upper bound (the EM usually
+#'   converges at delta<eps before max.iter). Distinct from the developer
+#'   debugInfo.txt dump.
+#' @param verbose logical. When TRUE and progress_log is set, echo the progress
+#'   records to the console after the fit returns (the fit call is blocking, so
+#'   for a live view tail the file from a separate shell). Default FALSE.
 #'
 #' @return RTIGER object
 #' @usage fit(rtigerobj, max.iter , eps,
 #' trace, all = TRUE, random = FALSE,
 #' specific = FALSE, nsamples = 20,
-#' post.processing = TRUE)
+#' post.processing = TRUE, progress_log = NULL, verbose = FALSE)
 #'
 #' @examples
 #'\dontrun{
@@ -29,7 +40,7 @@
 #' @export fit
 #'
 
-fit = function(rtigerobj, max.iter, eps, trace, all = TRUE, random = FALSE, specific = FALSE, nsamples = 20, post.processing = TRUE){
+fit = function(rtigerobj, max.iter, eps, trace, all = TRUE, random = FALSE, specific = FALSE, nsamples = 20, post.processing = TRUE, progress_log = NULL, verbose = FALSE){
   params = rtigerobj@params
   obs = rtigerobj@matobs
   info = rtigerobj@info
@@ -40,9 +51,22 @@ fit = function(rtigerobj, max.iter, eps, trace, all = TRUE, random = FALSE, spec
     })
     return(chr)
   })
+  # Single on/off switch for the per-iteration progress log, orthogonal to
+  # `verbose`: a non-empty path turns it on, "" keeps the fit silent (identical
+  # to before). R owns the path. Accepts NULL/FALSE (off), a string (that path),
+  # or TRUE (sentinel -> a default file under tempdir() when called directly;
+  # RTIGER() resolves TRUE to <outputdir>/fit_progress.log before calling fit).
+  progress_log_path =
+    if (is.null(progress_log) || isFALSE(progress_log)) {
+      ""
+    } else if (isTRUE(progress_log)) {
+      file.path(tempdir(), "fit_progress.log")
+    } else {
+      as.character(progress_log)
+    }
   # cat("Inside fit the postprocessing value is:", post.processing, "\n")
   # function fit(Observations,info,initial_parameter,max_iter=100,eps=10^(-5),trace=false)
-  myfit = julia_call("fit",obs, info, params, as.integer(max.iter), eps, trace, all, random , as.integer(nsamples), specific, post.processing )
+  myfit = julia_call("fit",obs, info, params, as.integer(max.iter), eps, trace, all, random , as.integer(nsamples), specific, post.processing, progress_log = progress_log_path )
   # function fit(
   #   input_Observations,
   #   info,
@@ -89,6 +113,14 @@ fit = function(rtigerobj, max.iter, eps, trace, all = TRUE, random = FALSE, spec
 
   rtigerobj@Probabilities = myfit[c("alpha", "beta", "gamma", "psi")]
   rtigerobj@num.iter = myfit$numberofiterations
+
+  # verbose console echo of the progress records (the julia_call above blocks,
+  # so this prints after completion; for a live ETA, tail the file meanwhile).
+  if (verbose && nzchar(progress_log_path) && file.exists(progress_log_path)) {
+    cat("EM progress (", progress_log_path, "):\n", sep = "")
+    cat(readLines(progress_log_path), sep = "\n")
+    cat("\n")
+  }
   return(rtigerobj)
 
 }

@@ -1091,7 +1091,8 @@ function fit(
     nsamples = 20,
     specific = nothing,
     post_processing = true,
-    DEBUG=false,
+    DEBUG=false;
+    progress_log="",
 )
     if DEBUG
         # display("Start in Julia")
@@ -1153,6 +1154,25 @@ function fit(
     parameter = initial_parameter
     nstates = parameter[:nstates]
     rigidity = parameter[:rigidity]
+    # User-facing per-iteration progress log (logging only; default off when
+    # progress_log==""). Distinct from the DEBUG/debugInfo.txt developer dump.
+    # One newline-terminated record per EM iteration, flushed each time so the
+    # file can be tailed live; lets a caller derive an ETA. t_start is taken
+    # before the first EM so per_iter is the running average over all iterations.
+    t_start = time()
+    logprog = function (iter, delta)
+        progress_log == "" && return
+        elapsed = time() - t_start
+        per = elapsed / iter
+        eta = per * max(0, max_iter - iter)
+        open(progress_log, "a") do io
+            println(io, "iter ", iter, "/", max_iter,
+                    "  delta=", delta, "  eps=", eps,
+                    "  elapsed=", round(elapsed, digits = 2),
+                    "  per_iter=", round(per, digits = 2),
+                    "  ETA<=", round(eta, digits = 2))
+        end
+    end
     (Gamma, traNeu, startNeu, aNeu, bNeu, alpha, beta, psi, m, tau) =
         EM(Observations, parameter, 1,DEBUG)
     if (DEBUG)
@@ -1169,6 +1189,7 @@ function fit(
         )],
     )
     abbruch = 1
+    logprog(abbruch, er)
     if trace
         trace_alpha = [parameter[:paraBetaAlpha] aNeu]
         trace_beta = [parameter[:paraBetaBeta] bNeu]
@@ -1202,6 +1223,7 @@ function fit(
                 parameter[:paraBetaBeta] - bNeu,
             )],
         )
+        logprog(abbruch, er)
         if trace
             trace_alpha = [trace_alpha aNeu]
             trace_beta = [trace_beta bNeu]
