@@ -441,55 +441,69 @@ function emissionMultiple(
         # Group markers by distinct (k,n) once (O(T)); the mean and the Optim
         # objective below then cost O(#pairs) instead of O(T) per evaluation.
         ks, ns, ws, sumk, sumn = emissionStats(O, gamma, i)
-        m[i] = sumk / sumn        # NaN when sumn == 0, handled below as before
-        if isnan(m[i])
-            m[i] = alpha_old[i] / (alpha_old[i] + beta_old[i])
-            anew[i] = alpha_old[i]
-            bnew[i] = beta_old[i]
-            tau[i] = (alpha_old[i] / m[i] + beta_old[i] / (1 - m[i]))
-        else
-            m[i] >= 0 || error(string(
-                "The mean of the Beta Binomial distribution must be greater then 0. Occured in state ",
-                i,
-                ". m= ",
-                m[i],
-            ))
-            m[i] <= 1 || error(string(
-                "The mean of the Beta Binomial distribution must be smaller then 1. Occured in state ",
-                i,
-            ))
-            if m[i] < 0.01
-                m[i] = 0.01
-            end
-            if m[i] > 0.99
-                m[i] = 0.99
-            end
-            tau[i] = (alpha_old[i] / m[i] + beta_old[i] / (1 - m[i]))
-            if tau[i] > 100
-                tau[i] = 100
-            end
-            # Same objective as before, summed over distinct (k,n) pairs with
-            # their accumulated gamma weights -> O(#pairs) per Optim evaluation.
-            mi = m[i]
-            Q = function (t)
-                acc = 0.0
-                @inbounds for p = 1:length(ws)
-                    acc += ws[p] * logpdf(BetaBinomial(ns[p], t * mi, t * (1 - mi)), ks[p])
-                end
-                return acc
-            end
-            res = optimize(
-                t -> -Q(first(t)),
-                max(0, tau[i] - 100),
-                max(tau[i] + 1, 100),
-                [tau[i]],
-            )
-            tau[i] = Optim.minimizer(res)[1]
-            anew[i] = tau[i] * m[i]
-            bnew[i] = tau[i] * (1 - m[i])
-        end
+        anew[i], bnew[i], m[i], tau[i] =
+            emissionUpdateState(i, ks, ns, ws, sumk, sumn, alpha_old, beta_old)
     end
     return anew, bnew, m, tau
+end
+
+"""
+    emissionUpdateState(i, ks, ns, ws, sumk, sumn, alpha_old, beta_old)
+Per-state maximization of the BetaBinomial emission, given the gamma-weighted
+sufficient statistics for state `i` (the distinct counts `ks`, totals `ns`,
+summed gamma weights `ws`, and the weighted totals `sumk`/`sumn`). Returns
+`(anew_i, bnew_i, m_i, tau_i)`. Shared by `emissionMultiple` (which builds the
+stats via `emissionStats`) and the streaming M-step in `EM`, so the arithmetic
+is identical regardless of how the stats were accumulated.
+"""
+function emissionUpdateState(i, ks, ns, ws, sumk, sumn, alpha_old, beta_old)
+    mi = sumk / sumn          # NaN when sumn == 0, handled below as before
+    if isnan(mi)
+        mi = alpha_old[i] / (alpha_old[i] + beta_old[i])
+        a_i = alpha_old[i]
+        b_i = beta_old[i]
+        tau_i = (alpha_old[i] / mi + beta_old[i] / (1 - mi))
+        return a_i, b_i, mi, tau_i
+    end
+    mi >= 0 || error(string(
+        "The mean of the Beta Binomial distribution must be greater then 0. Occured in state ",
+        i,
+        ". m= ",
+        mi,
+    ))
+    mi <= 1 || error(string(
+        "The mean of the Beta Binomial distribution must be smaller then 1. Occured in state ",
+        i,
+    ))
+    if mi < 0.01
+        mi = 0.01
+    end
+    if mi > 0.99
+        mi = 0.99
+    end
+    tau_i = (alpha_old[i] / mi + beta_old[i] / (1 - mi))
+    if tau_i > 100
+        tau_i = 100.0
+    end
+    # Same objective as before, summed over distinct (k,n) pairs with
+    # their accumulated gamma weights -> O(#pairs) per Optim evaluation.
+    Q = function (t)
+        acc = 0.0
+        @inbounds for p = 1:length(ws)
+            acc += ws[p] * logpdf(BetaBinomial(ns[p], t * mi, t * (1 - mi)), ks[p])
+        end
+        return acc
+    end
+    res = optimize(
+        t -> -Q(first(t)),
+        max(0, tau_i - 100),
+        max(tau_i + 1, 100),
+        [tau_i],
+    )
+    tau_i = Optim.minimizer(res)[1]
+    a_i = tau_i * mi
+    b_i = tau_i * (1 - mi)
+    return a_i, b_i, mi, tau_i
 end
 
 """
@@ -690,15 +704,28 @@ function EM(Observations::AbstractDict, logParameter::AbstractDict, iteration, p
     aAlt = logParameter[:paraBetaAlpha]
     bAlt = logParameter[:paraBetaBeta]
 
-    # List for the zeta values
-    Z = Dict()
-    # list for the gamma values
+    # Streaming M-step: instead of retaining every sample's zeta/gamma/alpha/
+    # beta/psi arrays and pooling them after the whole E-step (peak memory linear
+    # in #samples), accumulate the pooled sufficient statistics here as each
+    # sample is processed and discard that sample's arrays immediately. The
+    # accumulators mirror, in the same summation order, the standalone M-step
+    # functions: transitionMultiple (sumZeta), startMultiple (startAcc/nOb) and
+    # emissionStats/emissionUpdateState (per-state W + sumk/sumn).
+    sumZeta = zeros(1, nstates, nstates)   # Σ over chains of sum(zetac[r+1:T-r+1,:,:],dims=1)
+    startAcc = zeros(nstates, 1)           # Σ over chains of gammac[:,1]
+    nOb = 0                                # number of observation chains pooled
+    W = [Dict{Tuple{Int,Int},Float64}() for _ = 1:nstates]  # per-state distinct (k,n) -> Σγ
+    sumk = zeros(nstates)                  # per-state Σ γ·k
+    sumn = zeros(nstates)                  # per-state Σ γ·n
+
+    # @Probabilities free pass: the per-sample forward/backward/gamma/psi arrays
+    # used to be returned and stored in rtigerobj@Probabilities (R/fit.R:90), but
+    # that public slot is never read anywhere in the package. Retaining them for
+    # all samples is exactly what made peak memory linear in N, so we no longer
+    # keep them. The slot stays a valid (empty) 4-element list.
     G = Dict()
-    # list for the results of the forward algorithm
     alpha = Dict()
-    # list for the results of the backward algorithm
     beta = Dict()
-    # list of the logarithm of the psi values
     psi = Dict()
 
     if printbool
@@ -708,11 +735,6 @@ function EM(Observations::AbstractDict, logParameter::AbstractDict, iteration, p
     end
     for c in keys(O)
         Oc = O[c]
-        Z[c] = Dict()
-        G[c] = Dict()
-        alpha[c] = Dict()
-        beta[c] = Dict()
-        psi[c] = Dict()
         for i in keys(Oc)
             if printbool
                 d=open("debugInfo.txt","a")
@@ -775,18 +797,52 @@ function EM(Observations::AbstractDict, logParameter::AbstractDict, iteration, p
                 close(d)
                 start=time()
             end
-            # save in the global lists
-            Z[c][i] = zetac
-            G[c][i] = gammac
-            alpha[c][i] = alphac
-            beta[c][i] = betac
-            psi[c][i] = logpsi
+            # Fold this chain's contribution into the pooled sufficient
+            # statistics in the same order the standalone M-step would, then let
+            # zetac/gammac/alphac/betac/logpsi be reclaimed at the next iteration.
+            # transition (cf. transitionMultiple): Σ sum(zetac[r+1:T-r+1,:,:],dims=1)
+            sumZeta .+= sum(zetac[rigidity+1:Tc-rigidity+1, :, :], dims = 1)
+            # start (cf. startMultiple): Σ gammac[:,1] over chains, with a counter
+            startAcc .+= gammac[:, 1]
+            nOb += 1
+            # emission (cf. emissionStats): per-state Σγ grouped by distinct (k,n)
+            # plus the weighted totals sumk/sumn. Accumulating all states in one
+            # pass over t keeps each state's per-(sample,chr,t) summation order
+            # identical to emissionStats.
+            @inbounds for t = 1:Tc
+                kk = OChr[t, 1]
+                nn = OChr[t, 2]
+                for st = 1:nstates
+                    w = gammac[st, t]
+                    W[st][(kk, nn)] = get(W[st], (kk, nn), 0.0) + w
+                    sumk[st] += kk * w
+                    sumn[st] += nn * w
+                end
+            end
 
         end
     end
 
-    Anew = transitionMultiple(Z, rigidity, nstates)
-    PInew = startMultiple(G, nstates)
+    # Finalize the transition update from sumZeta (mirrors transitionMultiple:
+    # row-normalize the pooled zeta, with the all-zero-row guard).
+    sumSamples = sumZeta[1, :, :]
+    summedSumSamples = sum(sumSamples, dims = 2)
+    sTzeros = findall(iszero, summedSumSamples)
+    if length(sTzeros) > 0
+        @info "One row of transition probabilities is completely zero, there might be not enough information for one state."
+        for indexZ in sTzeros
+            summedSumSamples[indexZ] = 1
+        end
+    end
+    Anew = sumSamples ./ summedSumSamples
+    !any((x -> ((x < 0) | (x > 1))), Anew) ||
+        error("Some transition probability is not in the range of 0 to 1.")
+    # Finalize the start update from startAcc/nOb (mirrors startMultiple).
+    PInew = startAcc ./ nOb
+    !any(x -> x < 0, PInew) ||
+        error("Some start probability is smaller than one.")
+    !any(x -> x > 1, PInew) ||
+        error("Some start probability is greater than one.")
     if printbool
         t=time()-start
         d=open("debugInfo.txt","a")
@@ -794,13 +850,27 @@ function EM(Observations::AbstractDict, logParameter::AbstractDict, iteration, p
         close(d)
         start=time()
     end
-    (a, b, m, tau) = emissionMultiple(
-        O,
-        G,
-        nstates = nstates,
-        alpha_old = logParameter[:paraBetaAlpha],
-        beta_old = logParameter[:paraBetaBeta],
-    )
+    # Finalize the emission update from the per-state accumulators (mirrors
+    # emissionMultiple: build ks/ns/ws from W[i] then emissionUpdateState).
+    a = zeros(nstates, 1)
+    b = zeros(nstates, 1)
+    m = zeros(nstates, 1)
+    tau = zeros(nstates, 1)
+    for i = 1:nstates
+        np = length(W[i])
+        ks = Vector{Int}(undef, np)
+        ns = Vector{Int}(undef, np)
+        ws = Vector{Float64}(undef, np)
+        j = 0
+        for ((kk, nn), w) in W[i]
+            j += 1
+            ks[j] = kk
+            ns[j] = nn
+            ws[j] = w
+        end
+        a[i], b[i], m[i], tau[i] =
+            emissionUpdateState(i, ks, ns, ws, sumk[i], sumn[i], aAlt, bAlt)
+    end
     if printbool
         t=time()-start
         d=open("debugInfo.txt","a")
