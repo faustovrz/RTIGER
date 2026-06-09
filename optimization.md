@@ -1,8 +1,9 @@
 # RTIGER optimization fork — performance notes
 
-This repository is a **performance fork of [RTIGER](https://github.com/rfael0cm/RTIGER)**
-(`faustovrz/RTIGER`, branch `optimize-julia-core`). The goal is to make RTIGER
-usable on **large populations** — on the order of **1400 samples × ~50 000
+This repository — **`faustovrz/RTIGER`** (branch `optimize-julia-core`) — is a
+**performance fork** of the original RTIGER,
+[`rfael0cm/RTIGER`](https://github.com/rfael0cm/RTIGER). The goal is to make
+RTIGER usable on **large populations** — on the order of **1400 samples × ~50 000
 markers** — where the upstream implementation is impractically slow and runs out
 of memory.
 
