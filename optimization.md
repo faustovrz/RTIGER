@@ -49,7 +49,7 @@ This fork removes both walls without changing what RTIGER computes.
 | forward / backward | allocating log-sum-exp | in-place scalar | **~5×**, ~90× less alloc |
 | Full fit, AAACB5K (15 k markers) | 19.0 s | 0.46 s | **~41×** |
 | Full fit, BNZAU15K (15 k, r=2) | 157.5 s | 1.1 s | **~143×** |
-| Full fit, BNZAU270K (807 550 markers, r=2) | hours | **73 s** | see §3 |
+| Full fit, BNZAU270K (807 550 markers, r=2) | **>4 h 09 m** (still running) | **73 s** | **>~205×** (lower bound) |
 | Peak RSS vs #samples | linear (~25 MiB/sample) | **flat (~constant)** | §4 |
 | Projected peak RSS @ 1400×50k | ~33 GB | **~3.6 GB** | ~9× |
 
@@ -73,10 +73,12 @@ matters) and is independently committed.
 
 **Full-fit illustration (BNZAU270K, 807 550 markers, R-default init,
 `eps=0.01`, rigidity=2, native arm64):** the optimized core converges in **34 EM
-iterations in 73 s**; the upstream original performs the identical fit (same
-init, same data) in **multiple hours** — the un-optimized emission M-step is the
-entire difference. (The exact original wall-time from the head-to-head is being
-measured; it is the very cost this fork removes.)
+iterations in 73 s**. The upstream original performs the identical fit (same
+init, same data) in **more than 4 h 09 m** — at that point the head-to-head run
+was still going and had not yet converged, so this is a **lower bound**. Even so
+it is a speed-up of **> ~205× (14 940 s / 73 s), and still climbing**; the
+un-optimized emission M-step is the entire difference. The final original
+wall-time and the exact factor will be filled in when the run completes.
 
 ---
 
