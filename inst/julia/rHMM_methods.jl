@@ -679,6 +679,67 @@ end
 
 ## EM Schritt
 """
+    estepChain(logpsi, logAnfang, logTransition, nstates, rigidity;
+               sample=0, chromosom=0, iteration=1, printbool=false)
+One observation chain's E-step: from the log emission matrix `logpsi`
+(`nstates × T`) compute the windowed product `logPSI` and then the forward
+(`alphac`), backward (`betac`), `zetac` and `gammac` quantities. Shared by `EM`
+(which feeds `getlogpsi` output and streams the result) and `EMdev` (the dev()
+single-step helper, which retains the result), so the two cannot drift apart.
+When `printbool` is set it appends the per-substep timings
+(productpsi/forward/backward/zeta/gamma) to `debugInfo.txt`, completing the line
+started by the caller.
+# Return
+- `(alphac, betac, zetac, gammac)`
+"""
+function estepChain(
+    logpsi,
+    logAnfang,
+    logTransition,
+    nstates,
+    rigidity;
+    sample = 0,
+    chromosom = 0,
+    iteration = 1,
+    printbool = false,
+)
+    Tc = size(logpsi, 2)
+    if printbool
+        start = time()
+    end
+    logPSI = productpsi(logpsi, rigidity)
+    if printbool
+        t = time() - start
+        d = open("debugInfo.txt", "a"); write(d, string(t, " ")); close(d)
+        start = time()
+    end
+    alphac = forward(Tc, rigidity, nstates, logAnfang, logPSI, logTransition, logpsi)
+    if printbool
+        t = time() - start
+        d = open("debugInfo.txt", "a"); write(d, string(t, " ")); close(d)
+        start = time()
+    end
+    betac = backward(Tc, rigidity, nstates, logPSI, logTransition, logpsi)
+    if printbool
+        t = time() - start
+        d = open("debugInfo.txt", "a"); write(d, string(t, " ")); close(d)
+        start = time()
+    end
+    zetac = zeta(alphac, betac, logTransition, logPSI, logpsi, rigidity)
+    if printbool
+        t = time() - start
+        d = open("debugInfo.txt", "a"); write(d, string(t, " ")); close(d)
+        start = time()
+    end
+    gammac = gamma(zetac, alphac, betac, rigidity, sample, chromosom, iteration)
+    if printbool
+        t = time() - start
+        d = open("debugInfo.txt", "a"); write(d, string(t, "\n")); close(d)
+    end
+    return alphac, betac, zetac, gammac
+end
+
+"""
     EM(Observations::AbstractDict, logParameter::AbstractDict)
 One call of the expectation and maximization step
 # Arguments
@@ -730,7 +791,7 @@ function EM(Observations::AbstractDict, logParameter::AbstractDict, iteration, p
 
     if printbool
         d=open("debugInfo.txt","a")
-        write(d,string("sample chromosome psi forward backward zeta gamma\n"))
+        write(d,string("sample chromosome getlogpsi productpsi forward backward zeta gamma\n"))
         close(d)
     end
     for c in keys(O)
@@ -744,59 +805,28 @@ function EM(Observations::AbstractDict, logParameter::AbstractDict, iteration, p
             end
             OChr = Oc[i]
             Tc = size(OChr)[1]
-            # Calculation of the psi values with the BetaBinomial distribution
+            # Per-chain emission log-probabilities (EM-specific: from raw counts).
             logpsi = getlogpsi(OChr, aAlt, bAlt)
-            logPSI = productpsi(logpsi, rigidity)
             if printbool
                 t=time()-start
                 d=open("debugInfo.txt","a")
                 write(d,string(t," "))
                 close(d)
-                start=time()
             end
-            # Calculation of alpha, beta, zeta and gamma for each observation chain
-            alphac = forward(
-                Tc,
-                rigidity,
-                nstates,
-                logAnfang,
-                logPSI,
-                logTransition,
+            # Shared E-step (also used by EMdev): productpsi + forward/backward/
+            # zeta/gamma. estepChain completes the debug line when printbool set.
+            # alpha/beta are not retained by EM (streaming M-step), only zeta/gamma.
+            _, _, zetac, gammac = estepChain(
                 logpsi,
+                logAnfang,
+                logTransition,
+                nstates,
+                rigidity;
+                sample = c,
+                chromosom = i,
+                iteration = iteration,
+                printbool = printbool,
             )
-            if printbool
-                t=time()-start
-                d=open("debugInfo.txt","a")
-                write(d,string(t," "))
-                close(d)
-                start=time()
-            end
-            betac =
-                backward(Tc, rigidity, nstates, logPSI, logTransition, logpsi)
-            if printbool
-                t=time()-start
-                d=open("debugInfo.txt","a")
-                write(d,string(t," "))
-                close(d)
-                start=time()
-            end
-            zetac = zeta(alphac, betac, logTransition, logPSI, logpsi, rigidity)
-            if printbool
-                t=time()-start
-                d=open("debugInfo.txt","a")
-                write(d,string(t," "))
-                close(d)
-                start=time()
-            end
-            gammac = gamma(zetac, alphac, betac, rigidity, c, i, iteration)
-
-            if printbool
-                t=time()-start
-                d=open("debugInfo.txt","a")
-                write(d,string(t,"\n"))
-                close(d)
-                start=time()
-            end
             # Fold this chain's contribution into the pooled sufficient
             # statistics in the same order the standalone M-step would, then let
             # zetac/gammac/alphac/betac/logpsi be reclaimed at the next iteration.
@@ -1268,53 +1298,45 @@ function erstePara(
     return logpara
 end
 
-function EMdev(logpsi,inital_parameter)
-    #reading the input parameter
-    parameter=copy(inital_parameter)
+function EMdev(logpsi, initial_parameter)
+    # Developer single-step helper behind the exported R dev() (R/developer.R):
+    # one partial EM step from precomputed log emission probabilities. It updates
+    # the start and transition probabilities only (no emission update — the raw
+    # counts and BetaBinomial parameters are not passed in) and returns the gamma
+    # values for every chain. Unlike EM it RETAINS gamma, because dev() reads it
+    # back. Note the older I/O convention dev() depends on: non-log :pi and
+    # :transition in/out.
+    parameter = copy(initial_parameter)
     logAnfang = log.(parameter[:pi])
     logTransition = log.(parameter[:transition])
     nstates = parameter[:nstates]
-    rigidity=parameter[:rigidity]
-    samples=keys(logpsi)
-    Z=Dict()
-    G=Dict()
-    for s in samples
-        Z[s]=Dict()
-        G[s]=Dict()
+    rigidity = parameter[:rigidity]
+    Z = Dict()
+    G = Dict()
+    for s in keys(logpsi)
+        Z[s] = Dict()
+        G[s] = Dict()
         for c in keys(logpsi[s])
-            lpsi=logpsi[s][c]
-            if size(lpsi)[1]!=nstates
-                lpsi=Array(lpsi')
-
+            lpsi = logpsi[s][c]
+            if size(lpsi)[1] != nstates
+                lpsi = Array(lpsi')
             end
-            logPSI = productpsi(lpsi, rigidity)
-            T=size(lpsi)[2]
-            # Calculation of alpha, beta, zeta and gamma
-            alpha = forward(
-                T,
-                rigidity,
-                nstates,
-                logAnfang,
-                logPSI,
-                logTransition,
+            # Shared E-step with EM (see estepChain). EMdev keeps zeta/gamma.
+            _, _, zetac, gammac = estepChain(
                 lpsi,
+                logAnfang,
+                logTransition,
+                nstates,
+                rigidity;
+                sample = s,
+                chromosom = c,
             )
-            beta =
-                backward(T, rigidity, nstates, logPSI, logTransition, lpsi)
-            zetac = zeta(alpha, beta, logTransition, logPSI, lpsi, rigidity)
-            gammac = gamma(zetac, alpha, beta, rigidity)
-
-            #Save in global lists
-            Z[s][c]=zetac
-            G[s][c]=gammac
+            Z[s][c] = zetac
+            G[s][c] = gammac
         end
-
     end
 
-    Anew = transitionMultiple(Z, rigidity, nstates)
-    PInew = startMultiple(G, nstates)
-    parameter[:pi]=PInew
-    parameter[:transition]=Anew
-    ret=Dict(:gamma=>G,:parameter=>parameter)
-    return ret
+    parameter[:transition] = transitionMultiple(Z, rigidity, nstates)
+    parameter[:pi] = startMultiple(G, nstates)
+    return Dict(:gamma => G, :parameter => parameter)
 end
