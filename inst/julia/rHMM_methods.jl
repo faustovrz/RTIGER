@@ -489,14 +489,21 @@ function emissionUpdateState(i, ks, ns, ws, sumk, sumn, alpha_old, beta_old)
     # their accumulated gamma weights -> O(#pairs) per Optim evaluation.
     Q = function (t)
         acc = 0.0
+        # Floor the BetaBinomial shape params at a tiny positive value: Optim's
+        # finite-difference gradient probes t just below the lower bound, which
+        # would otherwise make t*mi slightly negative and throw a DomainError
+        # (crashes donor-sparse small groups). The floor is far below any real
+        # parameter, so it does not move the optimum.
+        a = max(t * mi, 1e-6)
+        b = max(t * (1 - mi), 1e-6)
         @inbounds for p = 1:length(ws)
-            acc += ws[p] * logpdf(BetaBinomial(ns[p], t * mi, t * (1 - mi)), ks[p])
+            acc += ws[p] * logpdf(BetaBinomial(ns[p], a, b), ks[p])
         end
         return acc
     end
     res = optimize(
         t -> -Q(first(t)),
-        max(0, tau_i - 100),
+        max(1e-6, tau_i - 100),
         max(tau_i + 1, 100),
         [tau_i],
     )
