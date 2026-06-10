@@ -248,6 +248,14 @@ myres = RTIGER(expDesign = expDesign,
                nstates=2)
 ```
 
+## Citation
+
+If you use RTIGER, please cite:
+
+> Campos-Martin R, Schmickler S, Goel M, Schneeberger K, Tresch A. **Reliable genotyping of recombinant genomes using a robust hidden Markov model.** *Plant Physiology.* 2023;192(2):821–836. [doi:10.1093/plphys/kiad191](https://doi.org/10.1093/plphys/kiad191) · [PMC10231367](https://pmc.ncbi.nlm.nih.gov/articles/PMC10231367/)
+
+The performance fork (this repository) is documented in [`docs/optimization.md`](docs/optimization.md).
+
 
 <!-- myres = RTIGER(expDesign = expDesign, outputdir = paste0("/srv/netscratch/dep_mercier/grp_schneeberger/projects/rtiger/test/"), seqlengths =chr_len, rigidity = 200) -->
     
