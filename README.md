@@ -41,7 +41,7 @@ opt-in per-iteration **progress log** (ETA) for long fits. **The model, the join
 fit, and the outputs are unchanged** — the optimizations preserve the arithmetic
 and are validated bit-identical against the original.
 
-➡ **Full details, techniques, and benchmarks: [`optimization.md`](optimization.md).**
+➡ **Full details, techniques, and benchmarks: [`docs/optimization.md`](docs/optimization.md).**
 
 The sections below are the original RTIGER usage guide and apply unchanged.
 
