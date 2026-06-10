@@ -54,8 +54,8 @@ This fork removes both walls without changing what RTIGER computes.
 | Peak RSS vs #samples | linear (~25 MiB/sample) | **flat (~constant)** | §4 |
 | Projected peak RSS @ 1400×50k | ~33 GB | **~3.6 GB** | ~9× |
 
-Datasets are real *Arabidopsis* Col×Ler allele counts; see
-[`agent/scale_check/README.md`](agent/scale_check/README.md) for provenance.
+Datasets are real *Arabidopsis* Col×Ler allele counts, sourced from the package's
+`data/` folder and the `.RData` environment dump of the original repository.
 
 ---
 
