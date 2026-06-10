@@ -119,6 +119,28 @@ whole fit from ~quadratic to ~linear in markers (§3); the other changes remove
 the secondary allocation overhead. These per-evaluation gains compound into the
 total-fit speed-ups in §2.
 
+**Per-iteration complexity (per chain).** With `T` = markers in a chain, `s` = 3
+states, `r` = rigidity, `D` = number of distinct `(k,n)` read-count pairs
+(`D ≪ T` for low-coverage data), `E` = emission line-search evaluations, and `N`
+= sample count:
+
+| optimization | before | after | gain |
+|---|---|---|---|
+| Ψ window (`productpsi`) | O(T·s·r) | O(T·s) | drop `r` |
+| emission log-pdf (`getlogpsi`) | O(T·s) BetaBinomial evals | O(D·s) | factor `T/D` |
+| emission M-step (`16b8a65`) | O(E·s·T) | O(s·T + E·s·D) | **~1500×** |
+| forward / backward (`44ed85b`) | O(T·s²) | O(T·s²) | ~5× (constant) |
+| Viterbi (`6cf85ca`) | O(T·s²) | O(T·s²) | ~12× (constant) |
+| memory — streaming M-step (`eb79933`, §5) | O(N·T·(s²+s·r)) | O(T_max·(s²+s·r)) | drop `N` |
+
+Two steps remove an asymptotic factor — the rigidity window `r`, and the marker
+count `T` in the emission line search (pre-summing γ over distinct `(k,n)`); the
+streaming M-step removes the per-sample memory factor `N`; forward/backward and
+Viterbi are constant-factor (allocation) wins. The full derivation, grounded in
+the rHMM equations of the **RTIGER supplementary material** (Campos-Martin et
+al., 2023), is in [`RTIGER_optimization.pdf`](RTIGER_optimization.pdf) (LaTeX
+source [`RTIGER_optimization.tex`](RTIGER_optimization.tex)).
+
 ---
 
 ## 5. Memory optimization — streaming M-step
