@@ -66,7 +66,8 @@ markers while the original is ~quadratic (§3) — so it widens past 610× beyon
 | Projected peak RSS @ 1400×50k | ~33 GB | **~3.6 GB** | ~9× |
 
 Data are real *Arabidopsis* Col×Ler allele counts (the BN/Z/AU samples) from the
-fitted object of the original repository.
+fitted object in the original repository's
+[`.RData`](https://github.com/rfael0cm/RTIGER/blob/main/.RData).
 
 ---
 
