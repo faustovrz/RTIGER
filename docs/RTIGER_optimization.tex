@@ -24,7 +24,12 @@
 This note derives, step by step, the asymptotic cost of the rigid-HMM (rHMM)
 Baum--Welch fit that RTIGER performs, and the big-$\bigO$ improvement contributed
 by each optimization in the \code{optimize-julia-core} fork. Equation numbers
-refer to the RTIGER supplementary text. Every optimization preserves the
+refer to the supplementary text of Campos-Martin \emph{et al.}\ (2023).%
+\footnote{Campos-Martin R, Schmickler S, Goel M, Schneeberger K, Tresch A.
+\emph{Reliable genotyping of recombinant genomes using a robust hidden Markov
+model.} Plant Physiology 2023;192(2):821--836.
+\texttt{doi:10.1093/plphys/kiad191}; PMC10231367.
+\url{https://doi.org/10.1093/plphys/kiad191}} Every optimization preserves the
 arithmetic of the model (Sections~2--4 of the supplement); only the cost of
 evaluating it changes. Two of the optimizations remove an asymptotic factor
 (the rigidity window $r$, and the marker count $T$ in the emission line search),

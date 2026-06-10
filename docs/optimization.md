@@ -137,9 +137,15 @@ Two steps remove an asymptotic factor — the rigidity window `r`, and the marke
 count `T` in the emission line search (pre-summing γ over distinct `(k,n)`); the
 streaming M-step removes the per-sample memory factor `N`; forward/backward and
 Viterbi are constant-factor (allocation) wins. The full derivation, grounded in
-the rHMM equations of the **RTIGER supplementary material** (Campos-Martin et
-al., 2023), is in [`RTIGER_optimization.pdf`](RTIGER_optimization.pdf) (LaTeX
-source [`RTIGER_optimization.tex`](RTIGER_optimization.tex)).
+the rHMM equations of the RTIGER paper's supplementary material [1], is in
+[`RTIGER_optimization.pdf`](RTIGER_optimization.pdf) (LaTeX source
+[`RTIGER_optimization.tex`](RTIGER_optimization.tex)).
+
+> [1] Campos-Martin R, Schmickler S, Goel M, Schneeberger K, Tresch A. *Reliable
+> genotyping of recombinant genomes using a robust hidden Markov model.* Plant
+> Physiology. 2023;192(2):821–836.
+> [doi:10.1093/plphys/kiad191](https://doi.org/10.1093/plphys/kiad191) ·
+> [PMC10231367](https://pmc.ncbi.nlm.nih.gov/articles/PMC10231367/)
 
 ---
 
