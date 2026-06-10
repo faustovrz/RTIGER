@@ -13,10 +13,12 @@ logging. **The model, the joint fit, the convergence criterion, and the outputs
 are unchanged** — every optimization preserves the arithmetic. Equivalence to the
 original is validated (see [Correctness](#correctness)).
 
-> TL;DR — same results, **~40–1500× faster** depending on stage, and **peak
-> memory made flat in the number of samples** (projected ~33 GB → ~3.6 GB at
-> 1400 samples), plus an opt-in per-iteration progress log so long fits report an
-> ETA.
+> TL;DR — same results; the total-fit speed-up **grows with problem size**
+> (~34× at 6.9 k markers/sample to **~610× at 110 k**, and widening) because the
+> optimized core scales **~O(N)** in markers where the original is **~O(N²)**.
+> Peak memory is also made **flat in the number of samples** (projected ~33 GB →
+> ~3.6 GB at 1400 samples), plus an opt-in per-iteration progress log so long fits
+> report an ETA.
 
 ---
 
@@ -42,44 +44,59 @@ This fork removes both walls without changing what RTIGER computes.
 
 ## 2. Summary of gains
 
-| Area | Before | After | Factor |
+**Total fit wall time, optimized vs upstream original**, on one shared marker
+panel (§3) — a fixed **6 EM iterations** (the smallest size converged in 5), 3
+samples, `eps=0.01`, rigidity 2, native arm64:
+
+| markers / sample (×3 samples) | original | optimized | speed-up |
+|---:|---:|---:|---:|
+| 6,857   | 7.4 s             | 0.22 s | **~34×** |
+| 13,713  | 50.8 s            | 0.59 s | **~86×** |
+| 27,426  | 330 s             | 2.0 s  | **~164×** |
+| 54,852  | 637 s             | 2.8 s  | **~230×** |
+| 109,703 | 3,608 s (~60 min) | 5.9 s  | **~610×** |
+
+The speed-up **grows with problem size** — the optimized core is ~linear in
+markers while the original is ~quadratic (§3) — so it widens past 610× beyond
+110 k. Memory is a separate axis:
+
+| | before | after | factor |
 |---|---|---|---|
-| Emission M-step (per EM iteration) | dominant cost | grouped + pre-summed γ | **~1500×** |
-| `getlogpsi` (emission log-pdf) | rebuilt per marker | memoized over distinct (k,n) | **~27×** |
-| Viterbi (max-product) | array-slice per step | in-place scalar argmax | **~12×** |
-| forward / backward | allocating log-sum-exp | in-place scalar | **~5×**, ~90× less alloc |
-| Full fit, AAACB5K (15 k markers) | 19.0 s | 0.46 s | **~41×** |
-| Full fit, BNZAU15K (15 k, r=2) | 157.5 s | 1.1 s | **~143×** |
-| Full fit, BNZAU270K (3 samples × ~270K markers/sample, r=2) | **17.3 h** (62 354 s) | **64.5 s** | **≈966×** |
 | Peak RSS vs #samples | linear (~25 MiB/sample) | **flat (~constant)** | §5 |
 | Projected peak RSS @ 1400×50k | ~33 GB | **~3.6 GB** | ~9× |
 
-Datasets are real *Arabidopsis* Col×Ler allele counts, sourced from the package's
-`data/` folder and the `.RData` environment dump of the original repository.
+Data are real *Arabidopsis* Col×Ler allele counts (the BN/Z/AU samples) from the
+fitted object of the original repository.
 
 ---
 
-## 3. Per-iteration timing and convergence (BNZAU270K head-to-head)
+## 3. Scaling with markers — shared-panel head-to-head
 
-![Left: per-iteration EM wall time (log scale) for the optimized vs original core on the BNZAU270K fit. Right: each iteration's original convergence δ plotted against the optimized δ on a log–log 1:1 line.](time_performance_270K.png)
+![Optimized vs original RTIGER per-iteration wall time against markers per sample, log–log; points are measurements, dashed lines are the power-law fits.](marker_scaling.png)
 
-**How this was produced.** Both cores were run on the same BNZAU270K fit (3
-samples × ~270K markers/sample, R-default init, `eps=0.01`, rigidity 2, native
-arm64) from identical deterministic initialization. Each EM iteration's `elapsed`
-and `delta` were captured with the opt-in progress log (§6) — one record per
-iteration — and the two logs read back and plotted: per-iteration wall time as
-the first-difference of cumulative `elapsed`, and the two cores' `delta`
-sequences against each other. The reproducible (un-evaluated) plotting notebook
-is [`time_performance_270K.qmd`](time_performance_270K.qmd).
+**How this was produced.** A single shared marker panel was built from the three
+real BN/Z/AU samples: the **109,703 loci covered in all three** of them — one
+common grid, fully populated, no missing-data padding. That panel was decimated
+by odd index four times to give five sizes — **6,857 → 13,713 → 27,426 → 54,852
+→ 109,703 markers per sample** (the *same* loci across all samples at every
+size). Each size was fit by both the optimized and the upstream original core for
+a fixed iteration count (`eps=0.01`, rigidity 2, native arm64), and per-iteration
+wall time recorded.
 
-**What it shows.** *Left:* the optimized core holds ~1.9 s/iter; the original
-averages ~1834 s/iter, with the erratic spikes characteristic of the
-un-optimized emission `Optim` step — the ≈966× full-fit gap, iteration by
-iteration. *Right:* every point sits on the 1:1 line (max relative δ difference
-~4e-5), so the two cores descend the **identical** convergence path and stop at
-the same iteration (**34** each). The δ gap is float-summation-order noise, not
-an algorithmic difference — consistent with the bit-identical Viterbi paths in
-§7.
+**What it shows.** On a log–log plot the per-iteration time is a straight line
+whose slope is the empirical complexity exponent:
+
+- **original ≈ markers²·¹⁰** (R² = 0.98) — roughly **quadratic**, and the top
+  doubling (55 k → 110 k) steepens to ~²·⁵, i.e. drifting super-quadratic at
+  scale.
+- **optimized ≈ markers¹·¹²** (R² = 0.97) — essentially **linear**.
+
+So the optimization removes ~one full factor of N (**O(N²) → O(N)**), which is
+why the total-runtime speed-up in §2 widens from ~34× to ~610× across the panel
+and keeps growing past it. The lone outlier — the original's 27 k point dipping
+below its fit — is the erratic emission-`Optim` evaluation count (the same noise
+that makes the original's per-iteration cost jump unpredictably); the optimized
+core, having collapsed that work to `O(#distinct (k,n) pairs)`, is smooth.
 
 ---
 
@@ -88,25 +105,19 @@ an algorithmic difference — consistent with the bit-identical Viterbi paths in
 Each change preserves the exact arithmetic (same summation order where it
 matters) and is independently committed.
 
-| Component | Technique | Commit |
-|---|---|---|
-| **Emission M-step** | Group markers by distinct `(k, n)` once and pre-sum the γ weights, so the `Optim` objective costs `O(#distinct pairs)` instead of `O(#markers)` per evaluation. Low-coverage genotyping data has only a handful of distinct pairs, so this collapses ~`T·states` `BetaBinomial` constructions to a few dozen. | `16b8a65` |
-| **`getlogpsi`** | Memoize the `BetaBinomial` log-pdf over distinct `(k, n)` pairs (same `logpdf` calls → bit-identical values). | `d725651` |
-| **`productpsi`** | In-place per-state sliding-window cumulative sum (same arithmetic order). | `d725651` |
-| **Viterbi** | Allocation-free in-place scalar argmax for the r-rigid max-product step. | `6cf85ca` |
-| **forward / backward** | In-place scalar log-sum-exp; ~90× fewer allocations. | `44ed85b` |
+| Component | Technique | Per-eval speed-up | Commit |
+|---|---|---|---|
+| **Emission M-step** | Group markers by distinct `(k, n)` once and pre-sum the γ weights, so the `Optim` objective costs `O(#distinct pairs)` instead of `O(#markers)` per evaluation. Low-coverage genotyping data has only a handful of distinct pairs, so this collapses ~`T·states` `BetaBinomial` constructions to a few dozen. | **~1500×** | `16b8a65` |
+| **`getlogpsi`** | Memoize the `BetaBinomial` log-pdf over distinct `(k, n)` pairs (same `logpdf` calls → bit-identical values). | ~27× | `d725651` |
+| **`productpsi`** | In-place per-state sliding-window cumulative sum (same arithmetic order). | in-place | `d725651` |
+| **Viterbi** | Allocation-free in-place scalar argmax for the r-rigid max-product step. | ~12× | `6cf85ca` |
+| **forward / backward** | In-place scalar log-sum-exp; ~90× fewer allocations. | ~5× | `44ed85b` |
 
-**Full-fit head-to-head (BNZAU270K — 3 samples × ~270K markers/sample, 807 550
-total; R-default init, `eps=0.01`, rigidity=2, native arm64, identical
-deterministic init):** both cores
-converge in **34 EM iterations**. The optimized core finishes in **64.5 s**
-(~1.9 s/iter); the upstream original takes **62 354 s ≈ 17.3 h** (~1834 s/iter,
-erratic per-iteration cost driven by the un-optimized emission `Optim`) — a
-speed-up of **≈966×**. The two fits are **equivalent**: identical Viterbi paths
-(**807 550/807 550** positions total over the 3 samples, 0 mismatches) and fitted parameters agreeing to 6 decimals
-(per-iteration convergence δ matching to ~4e-5 — float summation order, not an
-algorithmic difference). The per-iteration time and δ-trajectory comparison is
-shown in §3 above.
+The emission M-step was **~99.97%** of the original's runtime, so collapsing its
+per-evaluation cost from `O(#markers)` to `O(#distinct pairs)` is what bends the
+whole fit from ~quadratic to ~linear in markers (§3); the other changes remove
+the secondary allocation overhead. These per-evaluation gains compound into the
+total-fit speed-ups in §2.
 
 ---
 
@@ -184,9 +195,6 @@ history.
 - **BNZAU15K** (real, 15 k markers, R-default init, `eps=0.01`, r=2):
   **bit-identical** fitted params (to 6 dp) and **all** Viterbi paths.
 - **AAACB5K** (real extdata, deterministic init): identical params and Viterbi.
-- **BNZAU270K** (3 samples × ~270K markers/sample): decoding from the stored
-  fitted parameters reproduces the reference Viterbi path **100%
-  (807 550 / 807 550 positions, total over the 3 samples)**.
 - A synthetic equivalence harness is **bit-identical** to its committed
   baseline.
 - The streaming M-step and the `progress_log=off` path were each re-checked to
@@ -200,15 +208,13 @@ mathematically the same statistic, just a different float-add order.
 
 ## 8. Reproducing
 
-The figure in §3 is regenerated by the committed notebook
-[`time_performance_270K.qmd`](time_performance_270K.qmd) — un-evaluated;
-it reads the two per-iteration progress logs and draws the two panels.
-
-The full benchmark and equivalence suite — the full-resolution real-data checks
-(270 k decode = 100 %, the 15 k bit-identical A/B fit, the 270 k
-optimized-vs-original head-to-head), the peak-RSS scaling sweep, and the
-synthetic equivalence harness against its committed baseline — was run from the
-`optimize-julia-core` development workspace and is not shipped with the package.
+The scaling figure (§3) and the head-to-head numbers (§2) come from the
+**shared-panel marker sweep**: build the panel of loci covered in all three
+samples, decimate it by odd index to the five sizes, and time both cores at each
+size for a fixed iteration count. Those sweep scripts, the equivalence suite (the
+15 k bit-identical A/B fit and the synthetic harness against its committed
+baseline), and the peak-RSS scaling sweep were run from the `optimize-julia-core`
+development workspace and are not shipped with the package.
 
 ---
 
