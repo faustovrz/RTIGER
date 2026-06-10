@@ -79,7 +79,7 @@ converge in **34 EM iterations**. The optimized core finishes in **64.5 s**
 (~1.9 s/iter); the upstream original takes **62 354 s ≈ 17.3 h** (~1834 s/iter,
 erratic per-iteration cost driven by the un-optimized emission `Optim`) — a
 speed-up of **≈966×**. The two fits are **equivalent**: identical Viterbi paths
-(**807 550/807 550** positions, 0 mismatches) and fitted parameters agreeing to 6 decimals
+(**807 550/807 550** positions total over the 3 samples, 0 mismatches) and fitted parameters agreeing to 6 decimals
 (per-iteration convergence δ matching to ~4e-5 — float summation order, not an
 algorithmic difference). The per-iteration time and δ-trajectory comparison is in
 `agent/scale_check/22_twopanel_preview.png`.
@@ -162,7 +162,7 @@ history.
 - **AAACB5K** (real extdata, deterministic init): identical params and Viterbi.
 - **BNZAU270K** (3 samples × ~270K markers/sample): decoding from the stored
   fitted parameters reproduces the reference Viterbi path **100%
-  (807 550 / 807 550 positions)**.
+  (807 550 / 807 550 positions, total over the 3 samples)**.
 - A synthetic harness (`agent/bench/harness.jl`) is **bit-identical** to its
   committed baseline.
 - The streaming M-step and the `progress_log=off` path were each re-checked to
