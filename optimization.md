@@ -50,7 +50,7 @@ This fork removes both walls without changing what RTIGER computes.
 | forward / backward | allocating log-sum-exp | in-place scalar | **~5×**, ~90× less alloc |
 | Full fit, AAACB5K (15 k markers) | 19.0 s | 0.46 s | **~41×** |
 | Full fit, BNZAU15K (15 k, r=2) | 157.5 s | 1.1 s | **~143×** |
-| Full fit, BNZAU270K (807 550 markers, r=2) | **17.3 h** (62 354 s) | **64.5 s** | **≈966×** |
+| Full fit, BNZAU270K (3 samples × ~270K markers/sample, r=2) | **17.3 h** (62 354 s) | **64.5 s** | **≈966×** |
 | Peak RSS vs #samples | linear (~25 MiB/sample) | **flat (~constant)** | §4 |
 | Projected peak RSS @ 1400×50k | ~33 GB | **~3.6 GB** | ~9× |
 
@@ -72,13 +72,14 @@ matters) and is independently committed.
 | **Viterbi** | Allocation-free in-place scalar argmax for the r-rigid max-product step. | `6cf85ca` |
 | **forward / backward** | In-place scalar log-sum-exp; ~90× fewer allocations. | `44ed85b` |
 
-**Full-fit head-to-head (BNZAU270K, 807 550 markers, R-default init,
-`eps=0.01`, rigidity=2, native arm64, identical deterministic init):** both cores
+**Full-fit head-to-head (BNZAU270K — 3 samples × ~270K markers/sample, 807 550
+total; R-default init, `eps=0.01`, rigidity=2, native arm64, identical
+deterministic init):** both cores
 converge in **34 EM iterations**. The optimized core finishes in **64.5 s**
 (~1.9 s/iter); the upstream original takes **62 354 s ≈ 17.3 h** (~1834 s/iter,
 erratic per-iteration cost driven by the un-optimized emission `Optim`) — a
 speed-up of **≈966×**. The two fits are **equivalent**: identical Viterbi paths
-(**807 550/807 550**, 0 mismatches) and fitted parameters agreeing to 6 decimals
+(**807 550/807 550** positions, 0 mismatches) and fitted parameters agreeing to 6 decimals
 (per-iteration convergence δ matching to ~4e-5 — float summation order, not an
 algorithmic difference). The per-iteration time and δ-trajectory comparison is in
 `agent/scale_check/22_twopanel_preview.png`.
@@ -159,8 +160,9 @@ history.
 - **BNZAU15K** (real, 15 k markers, R-default init, `eps=0.01`, r=2):
   **bit-identical** fitted params (to 6 dp) and **all** Viterbi paths.
 - **AAACB5K** (real extdata, deterministic init): identical params and Viterbi.
-- **BNZAU270K** (807 550 markers): decoding from the stored fitted parameters
-  reproduces the reference Viterbi path **100% (807 550 / 807 550)**.
+- **BNZAU270K** (3 samples × ~270K markers/sample): decoding from the stored
+  fitted parameters reproduces the reference Viterbi path **100%
+  (807 550 / 807 550 positions)**.
 - A synthetic harness (`agent/bench/harness.jl`) is **bit-identical** to its
   committed baseline.
 - The streaming M-step and the `progress_log=off` path were each re-checked to
