@@ -17,8 +17,9 @@ original is validated (see [Correctness](#correctness)).
 > (~34× at 6.9 k markers/sample to **~610× at 110 k**, and widening) because the
 > optimized core scales **~O(N)** in markers where the original is **~O(N²)**.
 > Peak memory is also made **flat in the number of samples** (projected ~33 GB →
-> ~3.6 GB at 1400 samples), plus an opt-in per-iteration progress log so long fits
-> report an ETA.
+> ~3.6 GB at 1400 samples), plus an opt-in multithreaded E-step (`threads`, ~1.4×
+> on a 4-core M4, memory-bandwidth bound) and an opt-in per-iteration progress log
+> so long fits report an ETA.
 
 ---
 
@@ -217,7 +218,54 @@ history.
 
 ---
 
-## 7. Correctness
+## 7. Parallel E-step (opt-in, default off)
+
+**Commits `664eb33`, `be437d1`.** Once the serial optimizations make the emission
+M-step bounded (§4), the **E-step (forward/backward/zeta/gamma) dominates** — and
+it is *embarrassingly parallel across chains* (samples × chromosomes), the
+dimension that grows at population scale. `RTIGER()` / `fit()` gain a `threads`
+argument:
+
+- `threads = 1` (default) → the **bit-identical** serial path.
+- `threads > 1` → the per-chain E-step runs in parallel: chains are split into
+  contiguous chunks, each folded into its own sufficient-statistic accumulators
+  and **reduced in a fixed order**. The result is **Viterbi-identical** to
+  `threads = 1` (parameters differ only by float summation order) and
+  **deterministic for a fixed thread count**. A convergence guard band
+  (`round(er, digits = 6) > eps`) keeps the **iteration count identical** across
+  thread counts. Per-thread scratch buffers hold allocation to O(threads) rather
+  than O(chains), so peak memory stays **flat in N** (baseline + K × one chain).
+
+**Setup.** Julia's thread pool is fixed at startup, so set it *before* the engine
+starts; `threads` is then capped to `min(pool, physical cores)`:
+
+```r
+Sys.setenv(JULIA_NUM_THREADS = 4)   # BEFORE setupJulia()
+RTIGER(..., threads = 4)
+```
+
+**Performance — the honest number.** The E-step is **memory-bandwidth bound** (it
+streams large arrays with little arithmetic per element), so the speed-up is
+modest and *stable across chain counts*:
+
+| data | chains | threads=1 | threads=4 | speed-up |
+|---|---:|---:|---:|---:|
+| *Arabidopsis* panel, 109,703 mk/sample | 15 | 23.4 s | 16.6 s | **1.41×** |
+| maize 50K sample | 10 | 0.43 s | 0.32 s | **1.37×** |
+
+GC is ~2.5% (not the limiter — confirmed by `@timed`), and `threads = 8` never
+beats `threads = 4` (only 4 performance cores on the M4; memory bandwidth
+saturates). Because the ceiling is bandwidth — not chain count or GC — the
+**1400-sample joint fit is the same kernel and lands at ~1.4× on this hardware**
+(a ~10-min serial fit → ~7 min). More head-room needs more memory bandwidth (a
+server CPU), not more code. Default stays `threads = 1`; `threads = 4` is the
+documented fast setting on a 4-performance-core Mac. `threads > 1` requires the
+Julia pool set before `setupJulia()` and gives Viterbi-identical (not
+bit-identical) results — see §8.
+
+---
+
+## 8. Correctness
 
 "Optimized ≡ original" was validated from identical initialization:
 
@@ -235,9 +283,9 @@ mathematically the same statistic, just a different float-add order.
 
 ---
 
-## 8. Equivalence (run to convergence)
+## 9. Equivalence (run to convergence)
 
-§7 establishes bit-identical equality at 15 k from a single init. To confirm the
+§8 establishes bit-identical equality at 15 k from a single init. To confirm the
 optimized core does the *same job at scale*, both cores were run **to full
 convergence** (`eps=0.01`, rigidity 2, identical deterministic init, native
 arm64) on the shared panel at all five sizes, and their outputs compared
@@ -265,10 +313,10 @@ faster.
 
 ---
 
-## 9. Reproducing
+## 10. Reproducing
 
 The scaling figure (§3), the throughput numbers (§2), and the equivalence table
-and figure (§8) come from the **shared-panel marker sweep**: build the panel of
+and figure (§9) come from the **shared-panel marker sweep**: build the panel of
 loci covered in all three samples, decimate it by odd index to the five sizes,
 and run both cores at each size — at a fixed iteration count for the throughput
 numbers, and to full convergence for the equivalence check. Those sweep scripts,
@@ -278,7 +326,7 @@ against its committed baseline), and the peak-RSS scaling sweep were run from th
 
 ---
 
-## 10. Notes / gotchas
+## 11. Notes / gotchas
 
 - **Production defaults:** R's `RTIGER()` uses `eps = 0.01` (overrides Julia's
   `1e-5`); the 3-state label order is fixed pat/het/mat = 1/2/3, so the
