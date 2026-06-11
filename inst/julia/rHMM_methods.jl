@@ -1535,13 +1535,13 @@ function fit(
 
 
     #Loop for the fitting
-    # Guard band (§3a of PARALLEL_ESTEP_PLAN): round er to a grid far coarser than
-    # the parallel float-reorder error (~1e-7) but far finer than eps, so the stop
-    # decision is invariant to thread count / reduction order. Applies to both the
-    # serial and parallel paths, so the iteration count is identical across thread
-    # counts (and effectively unchanged vs the exact test — no validated fit sat
-    # within ~5e-5 of eps).
-    while round(er, digits = 4) > eps
+    # Guard band (§3a of PARALLEL_ESTEP_PLAN): round er to a 1e-6 grid — coarser
+    # than the parallel float-reorder error (~1e-7) so the stop decision is
+    # invariant to thread count / reduction order, yet finer than eps (Julia's
+    # default eps is 1e-5; R passes 0.01) so it never terminates prematurely.
+    # Applied to both the serial and parallel paths, so the iteration count is
+    # identical across thread counts and effectively unchanged vs exact `er > eps`.
+    while round(er, digits = 6) > eps
         if (abbruch >= max_iter)
             break
         end

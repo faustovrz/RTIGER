@@ -79,7 +79,9 @@ fit = function(rtigerobj, max.iter, eps, trace, all = TRUE, random = FALSE, spec
   # (JULIA_NUM_THREADS must be set before setupJulia(), as the pool is fixed at
   # startup and cannot grow at runtime).
   threads = as.integer(threads)
-  if (!is.na(threads) && threads > 1L) {
+  if (length(threads) != 1L || is.na(threads) || threads < 1L)
+    stop("threads must be a single integer >= 1", call. = FALSE)
+  if (threads > 1L) {
     pool = tryCatch(as.integer(julia_eval("Threads.nthreads()")), error = function(e) NA_integer_)
     if (!is.na(pool) && pool == 1L)
       warning("threads = ", threads, " requested but the Julia thread pool is 1. ",
