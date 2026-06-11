@@ -747,6 +747,37 @@ function estepChain(
 end
 
 """
+    foldChainInto!(sumZeta, startAcc, W, sumk, sumn, zetac, gammac, OChr,
+                   rigidity, nstates, Tc)
+Fold one chain's E-step output (`zetac`, `gammac`) into the pooled
+sufficient-statistic accumulators, in the exact order the standalone M-step
+functions use (transitionMultiple → startMultiple → emissionStats). Shared by the
+serial and parallel E-step paths in `EM` so their arithmetic cannot drift — only
+the order in which chains/chunks are reduced differs. Does not touch the chain
+counter `nOb` (the caller increments its own).
+"""
+function foldChainInto!(sumZeta, startAcc, W, sumk, sumn, zetac, gammac, OChr,
+                        rigidity, nstates, Tc)
+    # transition (cf. transitionMultiple): Σ sum(zetac[r+1:T-r+1,:,:],dims=1)
+    sumZeta .+= sum(zetac[rigidity+1:Tc-rigidity+1, :, :], dims = 1)
+    # start (cf. startMultiple): Σ gammac[:,1] over chains
+    startAcc .+= gammac[:, 1]
+    # emission (cf. emissionStats): per-state Σγ grouped by distinct (k,n) plus
+    # the weighted totals sumk/sumn, all states in one pass over t.
+    @inbounds for t = 1:Tc
+        kk = OChr[t, 1]
+        nn = OChr[t, 2]
+        for st = 1:nstates
+            w = gammac[st, t]
+            W[st][(kk, nn)] = get(W[st], (kk, nn), 0.0) + w
+            sumk[st] += kk * w
+            sumn[st] += nn * w
+        end
+    end
+    return nothing
+end
+
+"""
     EM(Observations::AbstractDict, logParameter::AbstractDict)
 One call of the expectation and maximization step
 # Arguments
@@ -763,7 +794,7 @@ One call of the expectation and maximization step
 - `beta`: list with the results of the backward algorithm for each observation chain
 - `psi`: list with psi values for each observation chain
 """
-function EM(Observations::AbstractDict, logParameter::AbstractDict, iteration, printbool)
+function EM(Observations::AbstractDict, logParameter::AbstractDict, iteration, printbool; threads = 1)
     O = Observations
     logAnfang = logParameter[:logpi]
     logTransition = logParameter[:logtransition]
@@ -796,67 +827,96 @@ function EM(Observations::AbstractDict, logParameter::AbstractDict, iteration, p
     beta = Dict()
     psi = Dict()
 
+    start = time()   # DEBUG timing anchor; defined here so the finalize-step
+                     # timing logs are well-defined in both the serial and
+                     # parallel paths (printbool only).
+    nthr = max(1, min(threads, Threads.nthreads()))
+    # Stable, indexable list of chains (samples × chromosomes), visited in the
+    # same order the serial loop would.
+    chains = Tuple{Any,Any}[]
+    for c in keys(O), i in keys(O[c])
+        push!(chains, (c, i))
+    end
     if printbool
         d=open("debugInfo.txt","a")
         write(d,string("sample chromosome getlogpsi productpsi forward backward zeta gamma\n"))
         close(d)
     end
-    for c in keys(O)
-        Oc = O[c]
-        for i in keys(Oc)
+
+    if nthr == 1
+        # ---- serial path: unchanged arithmetic, BIT-IDENTICAL to upstream ----
+        for (c, i) in chains
             if printbool
-                d=open("debugInfo.txt","a")
-                write(d,string(c," ",i," "))
-                close(d)
+                d=open("debugInfo.txt","a"); write(d,string(c," ",i," ")); close(d)
                 start=time()
             end
-            OChr = Oc[i]
+            OChr = O[c][i]
             Tc = size(OChr)[1]
             # Per-chain emission log-probabilities (EM-specific: from raw counts).
             logpsi = getlogpsi(OChr, aAlt, bAlt)
             if printbool
-                t=time()-start
-                d=open("debugInfo.txt","a")
-                write(d,string(t," "))
-                close(d)
+                t=time()-start; d=open("debugInfo.txt","a"); write(d,string(t," ")); close(d)
             end
             # Shared E-step (also used by EMdev): productpsi + forward/backward/
-            # zeta/gamma. estepChain completes the debug line when printbool set.
-            # alpha/beta are not retained by EM (streaming M-step), only zeta/gamma.
+            # zeta/gamma. alpha/beta are not retained by EM (streaming M-step).
             _, _, zetac, gammac = estepChain(
-                logpsi,
-                logAnfang,
-                logTransition,
-                nstates,
-                rigidity;
-                sample = c,
-                chromosom = i,
-                iteration = iteration,
-                printbool = printbool,
+                logpsi, logAnfang, logTransition, nstates, rigidity;
+                sample = c, chromosom = i, iteration = iteration, printbool = printbool,
             )
-            # Fold this chain's contribution into the pooled sufficient
-            # statistics in the same order the standalone M-step would, then let
-            # zetac/gammac/alphac/betac/logpsi be reclaimed at the next iteration.
-            # transition (cf. transitionMultiple): Σ sum(zetac[r+1:T-r+1,:,:],dims=1)
-            sumZeta .+= sum(zetac[rigidity+1:Tc-rigidity+1, :, :], dims = 1)
-            # start (cf. startMultiple): Σ gammac[:,1] over chains, with a counter
-            startAcc .+= gammac[:, 1]
+            # Fold into the pooled sufficient statistics; zetac/gammac/logpsi are
+            # then reclaimed at the next iteration (fold-and-discard).
+            foldChainInto!(sumZeta, startAcc, W, sumk, sumn, zetac, gammac, OChr,
+                           rigidity, nstates, Tc)
             nOb += 1
-            # emission (cf. emissionStats): per-state Σγ grouped by distinct (k,n)
-            # plus the weighted totals sumk/sumn. Accumulating all states in one
-            # pass over t keeps each state's per-(sample,chr,t) summation order
-            # identical to emissionStats.
-            @inbounds for t = 1:Tc
-                kk = OChr[t, 1]
-                nn = OChr[t, 2]
-                for st = 1:nstates
-                    w = gammac[st, t]
-                    W[st][(kk, nn)] = get(W[st], (kk, nn), 0.0) + w
-                    sumk[st] += kk * w
-                    sumn[st] += nn * w
-                end
+        end
+    else
+        # ---- parallel path: split chains into nthr contiguous chunks, fold each
+        # chunk into its OWN partial accumulators (fold-and-discard — no per-chain
+        # retention, so memory stays bounded by the thread count), then reduce the
+        # partials in fixed chunk order. Viterbi-identical to the serial path;
+        # parameters differ only by float summation order and are deterministic
+        # for a fixed thread count (ordered reduce). Per-chain DEBUG timing is
+        # disabled here to avoid concurrent writes to debugInfo.txt.
+        nchains = length(chains)
+        nchunks = min(nthr, nchains)
+        edges = [round(Int, x) for x in range(0, nchains; length = nchunks + 1)]
+        parts = Vector{Any}(undef, nchunks)
+        Threads.@threads :dynamic for ch = 1:nchunks
+            sZ = zeros(1, nstates, nstates)
+            sA = zeros(nstates, 1)
+            nO = 0
+            Wt = [Dict{Tuple{Int,Int},Float64}() for _ = 1:nstates]
+            sk = zeros(nstates)
+            sn = zeros(nstates)
+            for idx = (edges[ch] + 1):edges[ch + 1]
+                c, i = chains[idx]
+                OChr = O[c][i]
+                Tc = size(OChr)[1]
+                logpsi = getlogpsi(OChr, aAlt, bAlt)
+                _, _, zetac, gammac = estepChain(
+                    logpsi, logAnfang, logTransition, nstates, rigidity;
+                    sample = c, chromosom = i, iteration = iteration, printbool = false,
+                )
+                foldChainInto!(sZ, sA, Wt, sk, sn, zetac, gammac, OChr,
+                               rigidity, nstates, Tc)
+                nO += 1
             end
-
+            parts[ch] = (sumZeta = sZ, startAcc = sA, nOb = nO, W = Wt, sumk = sk, sumn = sn)
+        end
+        # Deterministic ordered reduce: chunk 1..nchunks (= serial chain order).
+        for ch = 1:nchunks
+            p = parts[ch]
+            sumZeta .+= p.sumZeta
+            startAcc .+= p.startAcc
+            nOb += p.nOb
+            for st = 1:nstates
+                Wst = W[st]; pWst = p.W[st]
+                for ((kk, nn), w) in pWst
+                    Wst[(kk, nn)] = get(Wst, (kk, nn), 0.0) + w
+                end
+                sumk[st] += p.sumk[st]
+                sumn[st] += p.sumn[st]
+            end
         end
     end
 
@@ -1100,6 +1160,7 @@ function fit(
     post_processing = true,
     DEBUG=false;
     progress_log="",
+    threads=1,
 )
     if DEBUG
         # display("Start in Julia")
@@ -1161,6 +1222,13 @@ function fit(
     parameter = initial_parameter
     nstates = parameter[:nstates]
     rigidity = parameter[:rigidity]
+    # Effective E-step thread count: never exceed the launched Julia pool nor the
+    # physical core count (oversubscription only slows this CPU-bound work). The
+    # pool is fixed at startup via JULIA_NUM_THREADS; threads>1 needs it set there.
+    nthr = clamp(threads, 1, min(Threads.nthreads(), Sys.CPU_THREADS))
+    threads > nthr && @warn "requested threads=$threads capped to $nthr " *
+        "(Julia pool=$(Threads.nthreads()), cores=$(Sys.CPU_THREADS)); " *
+        "set JULIA_NUM_THREADS before startup to use more"
     # User-facing per-iteration progress log (logging only; default off when
     # progress_log==""). Distinct from the DEBUG/debugInfo.txt developer dump.
     # One newline-terminated record per EM iteration, flushed each time so the
@@ -1181,7 +1249,7 @@ function fit(
         end
     end
     (Gamma, traNeu, startNeu, aNeu, bNeu, alpha, beta, psi, m, tau) =
-        EM(Observations, parameter, 1,DEBUG)
+        EM(Observations, parameter, 1, DEBUG; threads = nthr)
     if (DEBUG)
         t=time()-start
         d=open("debugInfo.txt","a")
@@ -1207,7 +1275,13 @@ function fit(
 
 
     #Loop for the fitting
-    while er > eps
+    # Guard band (§3a of PARALLEL_ESTEP_PLAN): round er to a grid far coarser than
+    # the parallel float-reorder error (~1e-7) but far finer than eps, so the stop
+    # decision is invariant to thread count / reduction order. Applies to both the
+    # serial and parallel paths, so the iteration count is identical across thread
+    # counts (and effectively unchanged vs the exact test — no validated fit sat
+    # within ~5e-5 of eps).
+    while round(er, digits = 4) > eps
         if (abbruch >= max_iter)
             break
         end
@@ -1224,7 +1298,7 @@ function fit(
         parameter[:logtransition] = log.(traNeu)
         parameter[:logpi] = log.(startNeu)
         (Gamma, traNeu, startNeu, aNeu, bNeu, alpha, beta, psi, m, tau) =
-            EM(Observations, parameter, (abbruch + 1),DEBUG)
+            EM(Observations, parameter, (abbruch + 1), DEBUG; threads = nthr)
         er = maximum(
             [abs.(parameter[:paraBetaAlpha] - aNeu) abs.(
                 parameter[:paraBetaBeta] - bNeu,
