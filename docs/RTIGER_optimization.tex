@@ -240,4 +240,30 @@ at every size), and fitted parameters agree to $\le 3\times10^{-6}$ --- float
 summation-order, not an algorithmic difference. The optimized core is the same
 estimator, computed at $\bigO(T)$ instead of empirically $\bigO(T^2)$ in markers.
 
+\section{Parallelism: the E-step across chains (a constant, not an exponent)}
+
+The E-step is independent across chains (samples $\times$ chromosomes) — the
+M-step only pools their summed sufficient statistics — so it is embarrassingly
+parallel. With $P$ worker threads the per-iteration wall time is
+\[
+\bigO(T s^2)\;\longrightarrow\;\bigO\!\left(\tfrac{T s^2}{P}\right),
+\qquad P \le \min(\text{Julia pool},\ \text{physical cores}),
+\]
+i.e.\ the \emph{constant} drops by $P$ but the \emph{exponent} is unchanged: on a
+log--log plot the optimized line shifts down by $\log P$ with the same slope.
+Parallelism cannot beat $\bigO(N)$ — dividing a fixed amount of work among a
+\emph{bounded} number of workers is a constant-factor speed-up, not a
+complexity-class change. (A sub-linear exponent would need $P$ to grow with the
+data; the chromosome is the natural, fixed parallel grain, so it does not.)
+
+In practice the realized speed-up is well below $P$ because the kernel is
+\textbf{memory-bandwidth bound} — it streams the large $\alpha,\beta,\zeta$ arrays
+with little arithmetic per element, so a few cores saturate the shared bandwidth.
+Measured on a 4-performance-core Apple M4: $\sim$1.4$\times$ at $P=4$ on both real
+\emph{Arabidopsis} (15 chains) and maize (10 chains) data, stable across chain
+counts, with GC $\sim$2.5\% (not the limiter) and $P=8$ no better than $P=4$.
+Determinism is preserved by a fixed-order reduce and a convergence guard band;
+\code{threads}=1 (default) is the bit-identical serial path and \code{threads}$>$1
+is Viterbi-identical. Commits \code{664eb33}, \code{be437d1}.
+
 \end{document}
