@@ -18,7 +18,7 @@ License: GPL (>= 2)
 Encoding: UTF-8
 LazyData: true
 LazyDataCompression: gzip
-Imports: methods, e1071, extraDistr, reshape2, ggplot2, TailRank, JuliaCall, IRanges, qpdf, grDevices, graphics, stats, utils
+Imports: methods, extraDistr, reshape2, ggplot2, TailRank, JuliaCall, IRanges, qpdf, grDevices, graphics, stats, utils
 RoxygenNote: 7.2.3
 VignetteBuilder: knitr
 Suggests: 
