@@ -9,9 +9,17 @@
 setupJulia = function(JULIA_HOME = NULL){
   if(!is.null(JULIA_HOME)) julia_setup(JULIA_HOME = JULIA_HOME)
   v = julia_eval("string(VERSION)")
-  # v = unlist(strsplit(v, split = "[.]"))
-  # v = as.numeric(paste(v[1:2], collapse = "."))
-  if(v != "1.0.5") cat("WARNING: Your Julia version is different than 1.0.5.\nWe recommend to use 1.0.5 to improve speeed. Using other versions might give problems or do not work on higher speed.")
+  # The optimize-julia-core fork is developed and validated on Julia 1.12.6
+  # (native arm64 on Apple Silicon). Only warn for genuinely older Julia; newer
+  # is fine (and faster). Proper component-wise compare via numeric_version, so
+  # e.g. 1.9 is correctly treated as older than 1.12 (a naive 1.9 > 1.12 numeric
+  # test would be wrong).
+  rec = "1.12.6"
+  vshort = sub("^([0-9]+\\.[0-9]+\\.[0-9]+).*$", "\\1", v)
+  older = tryCatch(numeric_version(vshort) < numeric_version(rec),
+                   error = function(e) FALSE)
+  if (older)
+    cat(sprintf("Note: Julia %s detected. RTIGER's optimized core is validated on Julia %s or newer (native arm64 on Apple Silicon); older Julia may be slower or hit incompatibilities.\n", v, rec))
   julia_install_package_if_needed("Optim")
   julia_install_package_if_needed("Distributions")
   julia_install_package_if_needed("LinearAlgebra")
