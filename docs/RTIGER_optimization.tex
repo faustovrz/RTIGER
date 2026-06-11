@@ -3,6 +3,7 @@
 \usepackage{amsmath,amssymb}
 \usepackage{booktabs}
 \usepackage{array}
+\usepackage{float}
 \usepackage{xcolor}
 \usepackage[colorlinks=true,linkcolor=blue,urlcolor=blue]{hyperref}
 \usepackage{enumitem}
@@ -179,7 +180,9 @@ $\sim$33\,GB projected $\to\sim$3.6\,GB at $1400\times50$k.
 
 \section{Summary}
 
-\begin{table}[h]
+The per-step time and memory complexity is consolidated in the table below.
+
+\begin{table}[H]
 \centering
 \renewcommand{\arraystretch}{1.3}
 \begin{tabular}{l l l c}
@@ -202,33 +205,39 @@ $D$, $E$ and $N$.}
 
 \section{Reconciliation with the measured scaling}
 
-A marker-scaling head-to-head (one shared 109{,}703-locus panel, decimated by
-odd index to five sizes, both cores run to convergence) gives empirical
-per-iteration exponents
+A marker-scaling head-to-head on one shared 109{,}703-locus panel (decimated by
+odd index to five sizes, both cores run \emph{to convergence}: \texttt{eps}$=0.01$,
+$r=2$, identical deterministic init) gives empirical per-iteration-mean exponents
 \[
-\text{original}\approx \text{markers}^{2.1},
+\text{original}\approx \text{markers}^{2.20},
 \qquad
-\text{optimized}\approx \text{markers}^{1.1}.
+\text{optimized}\approx \text{markers}^{1.34}.
 \]
-These are consistent with the analysis:
+These match the analysis:
 \begin{itemize}[nosep]
 \item \textbf{Optimized.} With the M-step reduced to a binning pass plus an
-$\bigO(E s D)$ search ($D$ nearly flat), the per-iteration cost is dominated by
-the $\bigO(T s^2)$ forward/backward/Viterbi kernels --- \emph{linear in $T$},
-matching the measured $\sim$1.1 exponent.
-\item \textbf{Original.} The per-iteration cost is dominated by the emission
-line search $\bigO(E s T_{\text{tot}})$, but $E$ (the number of \code{Optim}
-objective evaluations) is data-dependent and grows with scale, and the
-Beta--Binomial object is rebuilt per marker. The result is an empirically
-super-linear, erratic per-iteration cost ($\sim$markers$^{2.1}$, with
-iteration-to-iteration spikes) rather than a clean $\bigO(T)$ --- exactly the
-behaviour the grouping in \S4 removes.
+$\bigO(E s D)$ search ($D$ nearly flat), per-iteration cost is dominated by the
+$\bigO(T s^2)$ forward/backward/Viterbi kernels --- essentially \emph{linear in
+$T$}.
+\item \textbf{Original.} Per-iteration cost is dominated by the emission line
+search $\bigO(E s T_{\text{tot}})$ with a Beta--Binomial rebuilt per marker, and
+$E$ (the \code{Optim} evaluation count) is data-dependent and grows with scale.
+The result is an empirically super-linear, erratic per-iteration cost
+($\sim$markers$^{2.2}$, with iteration-to-iteration spikes) rather than a clean
+$\bigO(T)$ --- exactly what the grouping in \S4 removes.
 \end{itemize}
-The net effect: per-iteration cost goes from empirically $\sim$quadratic and
-erratic to provably linear ($\bigO(T s^2)$), and the optimized-vs-original
-speed-up therefore \emph{widens} with problem size (from $\sim$34$\times$ at
-$\sim$7k markers/sample to $\sim$610$\times$ at $\sim$110k) while every fit
-remains numerically identical (matching iteration counts, identical Viterbi
-paths, parameters agreeing to $\le 3\times10^{-6}$).
+So per-iteration cost goes from empirically $\sim$quadratic and erratic to
+provably linear ($\bigO(T s^2)$), and the full-fit speed-up \emph{widens} with
+problem size: \textbf{$\sim$30$\times$} at $6{,}857$ markers/sample to
+\textbf{$\sim$405$\times$} at $109{,}703$ ($3.4$\,h\,$\to$\,$30$\,s, both in
+$19$ EM iterations).
+
+\paragraph{Equivalence.} Crucially the speed-up changes nothing in the result.
+Run to convergence at all five sizes, the two cores take the \emph{same} number
+of EM iterations ($5,7,11,16,19$ for opt and orig alike), return \emph{identical}
+Viterbi paths ($329{,}109/329{,}109$ positions at the full panel; $0$ mismatches
+at every size), and fitted parameters agree to $\le 3\times10^{-6}$ --- float
+summation-order, not an algorithmic difference. The optimized core is the same
+estimator, computed at $\bigO(T)$ instead of empirically $\bigO(T^2)$ in markers.
 
 \end{document}

@@ -235,19 +235,50 @@ mathematically the same statistic, just a different float-add order.
 
 ---
 
-## 8. Reproducing
+## 8. Equivalence (run to convergence)
 
-The scaling figure (§3) and the head-to-head numbers (§2) come from the
-**shared-panel marker sweep**: build the panel of loci covered in all three
-samples, decimate it by odd index to the five sizes, and time both cores at each
-size for a fixed iteration count. Those sweep scripts, the equivalence suite (the
-15 k bit-identical A/B fit and the synthetic harness against its committed
-baseline), and the peak-RSS scaling sweep were run from the `optimize-julia-core`
-development workspace and are not shipped with the package.
+§7 establishes bit-identical equality at 15 k from a single init. To confirm the
+optimized core does the *same job at scale*, both cores were run **to full
+convergence** (`eps=0.01`, rigidity 2, identical deterministic init, native
+arm64) on the shared panel at all five sizes, and their outputs compared
+position-by-position:
+
+| markers / sample | EM iters (opt / orig) | Viterbi match | mismatches | param max-diff |
+|---:|:---:|---:|---:|---:|
+| 6,857   | 5 / 5   | 20,571 / 20,571   | 0 | 1e-6 |
+| 13,713  | 7 / 7   | 41,139 / 41,139   | 0 | 0 |
+| 27,426  | 11 / 11 | 82,278 / 82,278   | 0 | 0 |
+| 54,852  | 16 / 16 | 164,556 / 164,556 | 0 | 3e-6 |
+| 109,703 | 19 / 19 | 329,109 / 329,109 | 0 | 0 |
+
+At **every** size the two cores take the **same number of EM iterations**, return
+**identical Viterbi paths** (0 mismatches; 329,109/329,109 at the full panel), and
+fitted parameters agree to ≤3e-6 — float summation order, not an algorithmic
+difference. The per-iteration trajectories coincide on the 1:1 line:
+
+![BNZAU shared panel, 109,703 markers/sample, both cores run to convergence (19 iterations each). Left: per-iteration wall time — original ~648 s/iter (erratic) vs optimized ~1.6 s/iter. Right: each iteration's optimized δ against the original δ on a log–log 1:1 line (max relative difference 1e-5), early (yellow) → late (purple).](equivalence_110K.png)
+
+The left panel is the speed story (a **~405×** full-fit speed-up here: 3.4 h →
+30 s, 19 iterations each); the right panel is the correctness story — the two
+cores descend the *identical* path to convergence. Same answer, hundreds of times
+faster.
 
 ---
 
-## 9. Notes / gotchas
+## 9. Reproducing
+
+The scaling figure (§3), the throughput numbers (§2), and the equivalence table
+and figure (§8) come from the **shared-panel marker sweep**: build the panel of
+loci covered in all three samples, decimate it by odd index to the five sizes,
+and run both cores at each size — at a fixed iteration count for the throughput
+numbers, and to full convergence for the equivalence check. Those sweep scripts,
+the equivalence suite (the 15 k bit-identical A/B fit and the synthetic harness
+against its committed baseline), and the peak-RSS scaling sweep were run from the
+`optimize-julia-core` development workspace and are not shipped with the package.
+
+---
+
+## 10. Notes / gotchas
 
 - **Production defaults:** R's `RTIGER()` uses `eps = 0.01` (overrides Julia's
   `1e-5`); the 3-state label order is fixed pat/het/mat = 1/2/3, so the
