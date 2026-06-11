@@ -32,6 +32,12 @@
 #'   is a convenience sentinel for \code{file.path(outputdir, "fit_progress.log")}.
 #'   ETA<= is an upper bound since the EM usually converges (delta<eps) before
 #'   max.iter.
+#' @param threads integer >= 1 (default 1) — threads for the parallel per-chain
+#'   E-step, passed to \code{\link{fit}}. threads=1 is the validated serial path
+#'   (bit-identical); threads>1 is Viterbi-identical and deterministic for a fixed
+#'   thread count. Requires the Julia pool to be set BEFORE \code{setupJulia()}
+#'   via \code{Sys.setenv(JULIA_NUM_THREADS = N)}; capped to the pool and physical
+#'   core count. The E-step is memory-bandwidth bound, so the speed-up is modest.
 #' @return Matrix m x n. M number of samples and N chromosomes.
 #'
 #' @return RTIGER object
@@ -41,7 +47,7 @@
 #' crossovers_per_megabase = NULL, trace = FALSE,
 #' tiles = 4e5, all = TRUE, random = FALSE, specific = FALSE,
 #' nsamples = 20, post.processing = TRUE, save.results = TRUE, verbose = TRUE,
-#' progress_log = NULL)
+#' progress_log = NULL, threads = 1)
 #'
 #' @examples
 #'\dontrun{
@@ -84,7 +90,8 @@ RTIGER = function(expDesign,
                   post.processing = TRUE,
                   save.results = TRUE,
                   verbose = TRUE,
-                  progress_log = NULL){
+                  progress_log = NULL,
+                  threads = 1){
   # Checks
   if(any(seqlengths < tiles)) stop("Your tiling distance is larger than some of your chromosomes. Reduce the tiling parameter.\n")
   if(is.null(rigidity)) stop("Rigidity must be specified. This is a data specific parameter. Check vignette.\n")
@@ -140,7 +147,8 @@ RTIGER = function(expDesign,
               nsamples = nsamples,
               post.processing = post.processing,
               progress_log = progress_log,
-              verbose = verbose
+              verbose = verbose,
+              threads = threads
               )
   if(autotune){
     if(verbose) cat("Optimizing the R parameter.\n")
@@ -161,7 +169,8 @@ RTIGER = function(expDesign,
                 nsamples = nsamples,
                 post.processing = post_post.processing,
                 progress_log = progress_log,
-                verbose = verbose
+                verbose = verbose,
+                threads = threads
     )
 
   }

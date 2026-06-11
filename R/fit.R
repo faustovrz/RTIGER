@@ -20,12 +20,22 @@
 #' @param verbose logical. When TRUE and progress_log is set, echo the progress
 #'   records to the console after the fit returns (the fit call is blocking, so
 #'   for a live view tail the file from a separate shell). Default FALSE.
+#' @param threads integer >= 1 (default 1). Number of threads for the per-chain
+#'   E-step. threads=1 is the validated serial path, bit-identical to upstream;
+#'   threads>1 runs the chains (samples x chromosomes) of the E-step in parallel
+#'   and is Viterbi-identical to threads=1 (parameters within float
+#'   summation-order, deterministic for a fixed thread count). The Julia thread
+#'   pool is fixed at startup, so to use threads>1 set
+#'   `Sys.setenv(JULIA_NUM_THREADS = N)` BEFORE `setupJulia()`; the value is
+#'   capped to the launched pool and the physical core count. The E-step is
+#'   memory-bandwidth bound, so the speed-up is modest (~1.4x on a 4-performance-
+#'   core Apple M4); default 1.
 #'
 #' @return RTIGER object
 #' @usage fit(rtigerobj, max.iter , eps,
 #' trace, all = TRUE, random = FALSE,
 #' specific = FALSE, nsamples = 20,
-#' post.processing = TRUE, progress_log = NULL, verbose = FALSE)
+#' post.processing = TRUE, progress_log = NULL, verbose = FALSE, threads = 1)
 #'
 #' @examples
 #'\dontrun{
@@ -40,7 +50,7 @@
 #' @export fit
 #'
 
-fit = function(rtigerobj, max.iter, eps, trace, all = TRUE, random = FALSE, specific = FALSE, nsamples = 20, post.processing = TRUE, progress_log = NULL, verbose = FALSE){
+fit = function(rtigerobj, max.iter, eps, trace, all = TRUE, random = FALSE, specific = FALSE, nsamples = 20, post.processing = TRUE, progress_log = NULL, verbose = FALSE, threads = 1){
   params = rtigerobj@params
   obs = rtigerobj@matobs
   info = rtigerobj@info
@@ -64,9 +74,21 @@ fit = function(rtigerobj, max.iter, eps, trace, all = TRUE, random = FALSE, spec
     } else {
       as.character(progress_log)
     }
+  # Effective E-step thread count. The Julia side caps it to min(pool, cores) and
+  # warns; here we warn early for the common mistake of not setting the pool
+  # (JULIA_NUM_THREADS must be set before setupJulia(), as the pool is fixed at
+  # startup and cannot grow at runtime).
+  threads = as.integer(threads)
+  if (!is.na(threads) && threads > 1L) {
+    pool = tryCatch(as.integer(julia_eval("Threads.nthreads()")), error = function(e) NA_integer_)
+    if (!is.na(pool) && pool == 1L)
+      warning("threads = ", threads, " requested but the Julia thread pool is 1. ",
+              "Set Sys.setenv(JULIA_NUM_THREADS = ", threads, ") BEFORE setupJulia() ",
+              "and restart R; otherwise the fit runs serially.", call. = FALSE)
+  }
   # cat("Inside fit the postprocessing value is:", post.processing, "\n")
   # function fit(Observations,info,initial_parameter,max_iter=100,eps=10^(-5),trace=false)
-  myfit = julia_call("fit",obs, info, params, as.integer(max.iter), eps, trace, all, random , as.integer(nsamples), specific, post.processing, progress_log = progress_log_path )
+  myfit = julia_call("fit",obs, info, params, as.integer(max.iter), eps, trace, all, random , as.integer(nsamples), specific, post.processing, progress_log = progress_log_path, threads = threads )
   # function fit(
   #   input_Observations,
   #   info,
