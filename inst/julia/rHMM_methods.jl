@@ -758,7 +758,9 @@ counter `nOb` (the caller increments its own).
 """
 function foldChainInto!(sumZeta, startAcc, W, sumk, sumn, zetac, gammac, OChr,
                         rigidity, nstates, Tc)
-    # transition (cf. transitionMultiple): Σ sum(zetac[r+1:T-r+1,:,:],dims=1)
+    # transition (cf. transitionMultiple): Σ sum(zetac[r+1:T-r+1,:,:],dims=1).
+    # Keep Julia's `sum` (pairwise reduction) here so the serial path stays
+    # BIT-IDENTICAL to upstream; the parallel path uses foldChainIntoBuf! instead.
     sumZeta .+= sum(zetac[rigidity+1:Tc-rigidity+1, :, :], dims = 1)
     # start (cf. startMultiple): Σ gammac[:,1] over chains
     startAcc .+= gammac[:, 1]
@@ -774,6 +776,261 @@ function foldChainInto!(sumZeta, startAcc, W, sumk, sumn, zetac, gammac, OChr,
             sumn[st] += nn * w
         end
     end
+    return nothing
+end
+
+# Allocation-free fold for the PARALLEL path: a manual t-ascending sum replaces
+# sum(zetac[band,:,:],dims=1) so no ~zeta-sized slice is copied per chain (which
+# would defeat the zeta buffer). The sequential vs pairwise sum differs from the
+# serial fold by float-reorder only — the parallel path is already
+# non-bit-identical to serial by design (ordered reduce), and stays
+# Viterbi-identical and deterministic for a fixed thread count.
+function foldChainIntoBuf!(sumZeta, startAcc, W, sumk, sumn, zetac, gammac, OChr,
+                           rigidity, nstates, Tc)
+    @inbounds for k = 1:nstates, j = 1:nstates
+        acc = 0.0
+        for t = (rigidity+1):(Tc-rigidity+1)
+            acc += zetac[t, j, k]
+        end
+        sumZeta[1, j, k] += acc
+    end
+    @inbounds for st = 1:nstates
+        startAcc[st] += gammac[st, 1]
+    end
+    @inbounds for t = 1:Tc
+        kk = OChr[t, 1]
+        nn = OChr[t, 2]
+        for st = 1:nstates
+            w = gammac[st, t]
+            W[st][(kk, nn)] = get(W[st], (kk, nn), 0.0) + w
+            sumk[st] += kk * w
+            sumn[st] += nn * w
+        end
+    end
+    return nothing
+end
+
+# ============================================================================
+# Per-thread buffered E-step (parallel-path GC mitigation, PARALLEL_ESTEP_PLAN
+# §4.2). In-place variants of the E-step kernels that write into caller-provided
+# buffers sized to the largest chain, so a worker reuses ONE buffer set across
+# every chain it processes (allocation O(threads) instead of O(chains)). Each
+# kernel does the SAME arithmetic as its allocating counterpart, restricted to
+# the [1:T] region, so the buffered E-step is bit-identical to the serial one —
+# threads>1 stays Viterbi-identical to threads=1. Used only by EM's parallel
+# branch; the serial path keeps the allocating kernels untouched.
+# ============================================================================
+
+struct EstepBuffers
+    logpsi::Matrix{Float64}   # s × Tmax
+    PSI::Matrix{Float64}      # s × (Tmax + r)
+    alpha::Matrix{Float64}    # s × Tmax
+    beta::Matrix{Float64}     # s × Tmax
+    zeta::Array{Float64,3}    # Tmax × s × s
+    gam::Matrix{Float64}      # s × Tmax
+    L::Vector{Float64}        # Tmax
+    M::Vector{Float64}        # Tmax
+end
+EstepBuffers(s::Integer, Tmax::Integer, r::Integer) = EstepBuffers(
+    Matrix{Float64}(undef, s, Tmax),
+    Matrix{Float64}(undef, s, Tmax + r),
+    Matrix{Float64}(undef, s, Tmax),
+    Matrix{Float64}(undef, s, Tmax),
+    Array{Float64,3}(undef, Tmax, s, s),
+    Matrix{Float64}(undef, s, Tmax),
+    Vector{Float64}(undef, Tmax),
+    Vector{Float64}(undef, Tmax),
+)
+
+# getlogpsi → logpsi buffer [:,1:T]
+function getlogpsi!(logpsi, observations, a, b, T)
+    s = length(a)
+    cache = Dict{Tuple{Int,Int},Vector{Float64}}()
+    @inbounds for t = 1:T
+        k = observations[t, 1]
+        n = observations[t, 2]
+        v = get!(cache, (k, n)) do
+            Float64[logpdf(BetaBinomial(n, a[i], b[i]), k) for i = 1:s]
+        end
+        for i = 1:s
+            logpsi[i, t] = v[i]
+        end
+    end
+    return nothing
+end
+
+# productpsi → PSI buffer [:,1:T+r] (column T+r left 0, as in productpsi's zeros)
+function productpsi!(PSI, psi, T, r, k)
+    @inbounds for i = 1:k
+        for t = 1:(T+r)
+            PSI[i, t] = 0.0
+        end
+        PSI[i, 1] = psi[i, 1]
+        for t = 2:r
+            PSI[i, t] = PSI[i, t-1] + psi[i, t]
+        end
+        for t = (r+1):T
+            PSI[i, t] = PSI[i, t-1] + psi[i, t] - psi[i, t-r]
+        end
+        for t = (T+1):(T+r-1)
+            PSI[i, t] = PSI[i, t-1] - psi[i, t-r]
+        end
+    end
+    return nothing
+end
+
+# forward → alpha buffer [:,1:T] (mirrors forward exactly)
+function forward!(alpha, T, r, s, logPI, logPSI, logA, logpsi)
+    @inbounds for t = 1:T, k = 1:s
+        alpha[k, t] = -Inf
+    end
+    @inbounds for k = 1:s
+        alpha[k, r] = logPI[k] + logPSI[k, r]
+    end
+    @inbounds for t = (r+1):(2*r-1), k = 1:s
+        alpha[k, t] = logpsi[k, t] + logA[k, k] + alpha[k, t-1]
+    end
+    @inbounds for t = (2*r):(T-r+1)
+        for k = 1:s
+            stay = logpsi[k, t] + logA[k, k] + alpha[k, t-1]
+            maxv = -Inf; amax = 0
+            for i = 1:s
+                if i != k
+                    x = logA[i, k] + alpha[i, t-r]
+                    if x > maxv; maxv = x; amax = i; end
+                end
+            end
+            enter = -Inf
+            if maxv != -Inf
+                acc = 0.0
+                for i = 1:s
+                    if i != k && i != amax
+                        acc += exp(logA[i, k] + alpha[i, t-r] - maxv)
+                    end
+                end
+                enter = logPSI[k, t] + maxv + log1p(acc)
+            end
+            m  = stay > enter ? stay : enter
+            mn = stay > enter ? enter : stay
+            alpha[k, t] = m == -Inf ? -Inf : m + log1p(exp(mn - m))
+        end
+    end
+    return nothing
+end
+
+# backward → beta buffer [:,1:T] (mirrors backward exactly)
+function backward!(beta, T, r, s, logPSI, logA, logpsi)
+    @inbounds for t = 1:T, j = 1:s
+        beta[j, t] = -Inf
+    end
+    @inbounds for t = (T-r+1):T, j = 1:s
+        beta[j, t] = logPSI[j, t+r]
+    end
+    @inbounds for i = 0:(T-2*r)
+        t = T - r - i
+        for j = 1:s
+            stay = logpsi[j, t+1] + logA[j, j] + beta[j, t+1]
+            maxv = -Inf; amax = 0
+            for k = 1:s
+                if k != j
+                    x = logA[j, k] + logPSI[k, t+r] + beta[k, t+r]
+                    if x > maxv; maxv = x; amax = k; end
+                end
+            end
+            leave = -Inf
+            if maxv != -Inf
+                acc = 0.0
+                for k = 1:s
+                    if k != j && k != amax
+                        acc += exp(logA[j, k] + logPSI[k, t+r] + beta[k, t+r] - maxv)
+                    end
+                end
+                leave = maxv + log1p(acc)
+            end
+            m  = stay > leave ? stay : leave
+            mn = stay > leave ? leave : stay
+            beta[j, t] = m == -Inf ? -Inf : m + log1p(exp(mn - m))
+        end
+    end
+    return nothing
+end
+
+# zeta → zeta buffer [1:T,:,:] (mirrors zeta; max/exp over [1:T,:,:] only)
+function zeta!(zb, logalpha, logbeta, logA, logPSI, logpsi, r, T, s)
+    @inbounds for k = 1:s, j = 1:s, t = 1:T
+        zb[t, j, k] = -Inf
+    end
+    @inbounds for k = 1:s, j = 1:s
+        if j != k
+            for t = (r+1):(T-r+1)
+                zb[t, j, k] = logalpha[j, t-1] + logA[j, k] + logbeta[k, t+r-1] + logPSI[k, t+r-1]
+            end
+        else
+            for t = (r+1):(T-r+1)
+                zb[t, k, k] = logalpha[k, t-1] + logA[k, k] + logpsi[k, t] + logbeta[k, t]
+            end
+        end
+    end
+    PO = -Inf
+    @inbounds for k = 1:s, j = 1:s, t = 1:T
+        v = zb[t, j, k]
+        if v > PO; PO = v; end
+    end
+    @inbounds for k = 1:s, j = 1:s, t = 1:T
+        zb[t, j, k] = exp(zb[t, j, k] - PO)
+    end
+    return nothing
+end
+
+# gamma → gam buffer [:,1:T] (mirrors gamma; in-place column normalization)
+function gamma!(gam, zeta, logalpha, logbeta, r, T, s, L, M)
+    gammar = logalpha[:, r] + logbeta[:, r]
+    gammar = gammar .- maximum(gammar)
+    gammar = exp.(gammar)
+    gammar = gammar ./ sum(gammar)
+    @inbounds for t = 1:r, k = 1:s
+        gam[k, t] = gammar[k]
+    end
+    @inbounds for k = 1:s
+        for t = 1:T
+            acc = 0.0
+            for j = 1:s
+                if j != k; acc += zeta[t, j, k]; end
+            end
+            L[t] = acc
+        end
+        run = 0.0
+        for t = 1:T
+            run += L[t]; M[t] = run
+        end
+        for t = (r+1):(T-r+1)
+            Mm = t <= 2*r ? M[r] : M[t-r]
+            gam[k, t] = zeta[t, k, k] + M[t] - Mm
+        end
+    end
+    @inbounds for t = (T-r+2):T, k = 1:s
+        gam[k, t] = gam[k, T-r+1]
+    end
+    @inbounds for t = 1:T
+        cs = 0.0
+        for k = 1:s; cs += gam[k, t]; end
+        for k = 1:s; gam[k, t] /= cs; end
+    end
+    @inbounds for t = 1:T, k = 1:s
+        gam[k, t] < 0 && error("negative gamma value in buffered gamma! (t=$t k=$k)")
+    end
+    return nothing
+end
+
+# Buffered per-chain E-step: fills bufs in place; returns nothing (caller folds
+# from bufs.zeta / bufs.gam over [1:Tc]).
+function estepChainBuf!(bufs::EstepBuffers, OChr, aAlt, bAlt, logAnfang, logTransition, nstates, rigidity, Tc)
+    getlogpsi!(bufs.logpsi, OChr, aAlt, bAlt, Tc)
+    productpsi!(bufs.PSI, bufs.logpsi, Tc, rigidity, nstates)
+    forward!(bufs.alpha, Tc, rigidity, nstates, logAnfang, bufs.PSI, logTransition, bufs.logpsi)
+    backward!(bufs.beta, Tc, rigidity, nstates, bufs.PSI, logTransition, bufs.logpsi)
+    zeta!(bufs.zeta, bufs.alpha, bufs.beta, logTransition, bufs.PSI, bufs.logpsi, rigidity, Tc, nstates)
+    gamma!(bufs.gam, bufs.zeta, bufs.alpha, bufs.beta, rigidity, Tc, nstates, bufs.L, bufs.M)
     return nothing
 end
 
@@ -880,8 +1137,14 @@ function EM(Observations::AbstractDict, logParameter::AbstractDict, iteration, p
         nchains = length(chains)
         nchunks = min(nthr, nchains)
         edges = [round(Int, x) for x in range(0, nchains; length = nchunks + 1)]
+        Tmax = maximum(size(O[c][i], 1) for (c, i) in chains)
         parts = Vector{Any}(undef, nchunks)
         Threads.@threads :dynamic for ch = 1:nchunks
+            # One reusable buffer set per chunk (= per worker), sized to the
+            # largest chain; reused across this chunk's chains so per-chain array
+            # allocation becomes O(threads) instead of O(chains) — the GC
+            # contention that otherwise caps the speedup.
+            bufs = EstepBuffers(nstates, Tmax, rigidity)
             sZ = zeros(1, nstates, nstates)
             sA = zeros(nstates, 1)
             nO = 0
@@ -892,13 +1155,10 @@ function EM(Observations::AbstractDict, logParameter::AbstractDict, iteration, p
                 c, i = chains[idx]
                 OChr = O[c][i]
                 Tc = size(OChr)[1]
-                logpsi = getlogpsi(OChr, aAlt, bAlt)
-                _, _, zetac, gammac = estepChain(
-                    logpsi, logAnfang, logTransition, nstates, rigidity;
-                    sample = c, chromosom = i, iteration = iteration, printbool = false,
-                )
-                foldChainInto!(sZ, sA, Wt, sk, sn, zetac, gammac, OChr,
-                               rigidity, nstates, Tc)
+                estepChainBuf!(bufs, OChr, aAlt, bAlt, logAnfang, logTransition,
+                               nstates, rigidity, Tc)
+                foldChainIntoBuf!(sZ, sA, Wt, sk, sn, bufs.zeta, bufs.gam, OChr,
+                                  rigidity, nstates, Tc)
                 nO += 1
             end
             parts[ch] = (sumZeta = sZ, startAcc = sA, nOb = nO, W = Wt, sumk = sk, sumn = sn)
