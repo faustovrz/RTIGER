@@ -56,7 +56,6 @@ optimize_R = function(object,
   picked_parameters = myDat@params
   transition_pars = picked_parameters$transition  # this is on the absolute scale
   emission_pars = extract_emissions(picked_parameters)
-  number_of_samples = myDat@info$sample_nr
 
   # Chromosome lengths for the genome length / chromosome count. Prefer the value
   # stored on @info (set by generateObject), but fall back to the lengths carried
@@ -82,9 +81,12 @@ optimize_R = function(object,
   # ideally, we should use a grid with only ~3 significant binary digits (i.e., at most 3 columns in Delta_table
   # must be added up, this saves a lot of time)
 
-  rigidity_gridpoints = 10
-  rigidity_grid = unique(round((2^seq(from=3,to=log2(max_rigidity),
-                                      length=rigidity_gridpoints))))
+  # Rigidity grid: powers of two from 2 up to max_rigidity. The manuscript sweeps
+  # 2 <= r <= 400 (Text S4); the previous grid was 2^seq(from = 3, ...), i.e.
+  # floored at 2^3 = 8, so it could never recommend r < 8 (and returned that floor
+  # for low-coverage data whose true optimum is higher). A coarse power-of-two grid
+  # for now; a later refinement can saturate finer points around the coarse minimum.
+  rigidity_grid = as.integer(2^(1:floor(log2(max_rigidity))))
   n_rigidity = length(rigidity_grid)
 
 
@@ -97,7 +99,7 @@ optimize_R = function(object,
   # must be added up, this saves a lot of time)
 
 
-  Deltas = construct_Delta_table(n_obs = number_of_samples, # how many samples shall be constructed?
+  Deltas = construct_Delta_table(n_obs = 1e4, # Monte Carlo draws for the FPR/FNR estimate (manuscript Text S4 eq. 53 uses N = 10^4; the previous call wrongly passed the *biological sample* count, ~3, so the rates were estimated from 3 draws)
                                  max_segment_length = max_segment_length, # length of the largest segment to be evaluated
                                  coverage=average_coverage, # average number of observations per marker
                                  emissions=emission_pars # named (mat,het,pat) list with emission probabilities (named vector c(alpha=...,beta=...) in each list entry)
