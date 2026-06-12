@@ -85,6 +85,12 @@ generateObject = function(experimentDesign = NULL, nstates = 3, rigidity = NULL,
   })
 
   info = create_info(obs)
+  # Store the chromosome lengths on @info: optimize_R() (the autotune step) reads
+  # myDat@info$seqlengths for the genome length / chromosome count. create_info()
+  # does not capture it, so without this the slot is NULL and optimize_R computes
+  # total_length = 0, collapsing every segmentation-error term to 0 and always
+  # returning the smallest rigidity in its grid regardless of the data.
+  info$seqlengths = seqlengths
 
   params = generate_params(rigidity = rigidity, nstates = nstates)
 

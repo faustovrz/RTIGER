@@ -58,7 +58,15 @@ optimize_R = function(object,
   emission_pars = extract_emissions(picked_parameters)
   number_of_samples = myDat@info$sample_nr
 
+  # Chromosome lengths for the genome length / chromosome count. Prefer the value
+  # stored on @info (set by generateObject), but fall back to the lengths carried
+  # by the Viterbi GRanges for objects built before that slot was populated.
+  # Without this fallback, an empty slot gives total_length = 0, which zeroes every
+  # segmentation-error term and makes optimize_R always return the smallest grid
+  # rigidity regardless of the data.
   chromosome_lengths = myDat@info$seqlengths
+  if (is.null(chromosome_lengths) || length(chromosome_lengths) == 0)
+    chromosome_lengths = seqlengths
   n_chromosomes = length(chromosome_lengths)
   total_length = sum(chromosome_lengths)
 
