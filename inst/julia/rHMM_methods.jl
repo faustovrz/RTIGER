@@ -489,11 +489,10 @@ function emissionUpdateState(i, ks, ns, ws, sumk, sumn, alpha_old, beta_old)
     # their accumulated gamma weights -> O(#pairs) per Optim evaluation.
     Q = function (t)
         acc = 0.0
-        # Floor the BetaBinomial shape params at a tiny positive value: Optim's
-        # finite-difference gradient probes t just below the lower bound, which
-        # would otherwise make t*mi slightly negative and throw a DomainError
-        # (crashes donor-sparse small groups). The floor is far below any real
-        # parameter, so it does not move the optimum.
+        # Floor the BetaBinomial shape params at a tiny positive value so the
+        # optimizer never evaluates a non-positive shape (DomainError on
+        # donor-sparse small groups). The floor is far below any real parameter,
+        # so it does not move the optimum.
         a = max(t * mi, 1e-6)
         b = max(t * (1 - mi), 1e-6)
         @inbounds for p = 1:length(ws)
@@ -501,13 +500,17 @@ function emissionUpdateState(i, ks, ns, ws, sumk, sumn, alpha_old, beta_old)
         end
         return acc
     end
-    res = optimize(
-        t -> -Q(first(t)),
-        max(1e-6, tau_i - 100),
-        max(tau_i + 1, 100),
-        [tau_i],
-    )
-    tau_i = Optim.minimizer(res)[1]
+    # Univariate Brent on the 1-D profile likelihood. The previous call passed an
+    # initial-guess vector `[tau_i]`, which makes `optimize` dispatch to Fminbox (a
+    # box-constrained *multivariate* solver: inner Nelder-Mead with finite-diff
+    # gradients + barrier iterations) for what is a scalar problem — ~10^4 objective
+    # evaluations per M-step where Brent needs ~20-40, and the emission M-step is
+    # the dominant cost of the whole fit. Brent reaches the same optimum (to ~1e-4)
+    # in a few dozen evaluations. `optimize(f, lower, upper)` already defaults to
+    # Brent; we name it explicitly. (Univariate optimize takes no starting point —
+    # supplying one was exactly the mistake that triggered Fminbox.)
+    res = optimize(t -> -Q(t), max(1e-6, tau_i - 100), max(tau_i + 1, 100), Brent())
+    tau_i = Optim.minimizer(res)
     a_i = tau_i * mi
     b_i = tau_i * (1 - mi)
     return a_i, b_i, mi, tau_i
