@@ -26,9 +26,22 @@ optimize_R = function(object,
                       max_rigidity = 2^9,
                       average_coverage = NULL,
                       crossovers_per_megabase = NULL,
+                      seed = 1L,
                       save_it = FALSE,
                       savedir = NULL ){
   if(save_it & is.null(savedir)) stop("Please if you want to save the plots and results specify the path in savedir.\n")
+  # Reproducibility: the only stochastic step is the Monte-Carlo Delta table
+  # (rmultinom in construct_Delta_table). Seed it so a given object yields the
+  # same rigidity every run; everything downstream (FPR/FNR, SE+/SE-, the
+  # coarse->refine search) is deterministic given the Delta table. Restore the
+  # caller's RNG state on exit so we don't perturb their stream. seed = NULL
+  # leaves the RNG untouched (non-reproducible, old behaviour).
+  if (!is.null(seed)) {
+    old_seed = if (exists(".Random.seed", envir = .GlobalEnv))
+      get(".Random.seed", envir = .GlobalEnv) else NULL
+    set.seed(seed)
+    on.exit(if (!is.null(old_seed)) assign(".Random.seed", old_seed, envir = .GlobalEnv), add = TRUE)
+  }
   myDat = object
   seqlengths = seqlengths(myDat@Viterbi[[1]])
   expDesign = myDat@info$expDesign
