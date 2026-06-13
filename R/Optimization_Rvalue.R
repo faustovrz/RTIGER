@@ -427,13 +427,21 @@ construct_Delta_table = function(n_obs = 10^4, # how many samples shall be const
     #cat(segment_length,", ")
 
     for (x_state in states){
+      # Draw the synthetic segments ONCE per (x_state, m) and score the SAME
+      # observations under every y_state. The FPR/FNR are built from differences
+      # like Delta[x,y] - Delta[x,x], which the manuscript defines as the PAIRED
+      # log-likelihood ratio Delta_{m,x,y} = logP(o, all-y) - logP(o, all-x) on the
+      # SAME observation o (Supplemental Text S4, eq. 60). Previously `tables` was
+      # redrawn inside the y_state loop, so the two likelihoods were evaluated on
+      # DIFFERENT random segments -> an UNPAIRED statistic whose variance is
+      # inflated by +2*Cov(logP_y, logP_x). That overestimates FPR/FNR (e.g. an
+      # FPR of ~1e-4 where the paired value is ~1e-10) and biases the suggested
+      # rigidity upward. Drawing once and reusing it makes the estimate paired,
+      # matching the manuscript's definition.
+      tables = rmultinom(n_obs, size = segment_length, prob = probs[x_state,,])
       for (y_state in states){
-
-        # "construct <n_obs> summary tables of observations (k,n) drawn from x_state
-        tables = rmultinom(n_obs,size=segment_length,prob = probs[x_state,,])
         # evaluate these observations with the probabilities of the y_state
         Delta_table[x_state,y_state,m,] = colSums(tables * as.vector(log_probs[y_state,,]))
-
       } # end for y_state
     } # end for x_state
 
