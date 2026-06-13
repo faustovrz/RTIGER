@@ -242,7 +242,7 @@ optimize_R = function(object,
     plot(c(0,0), ylim=c(0,max(FPR_grid*100)),xlim=c(0.95,max(segment_length_grid)*2),
          type="n", xlab="Segment_length",ylab="FPR [%]",log="x")
     abline(h=0,col="grey")
-    title(paste(c("FPR (segment_length,rigidity) , coverage = ",coverage),collapse=""))
+    title(paste(c("FPR (segment_length,rigidity) , coverage = ",average_coverage),collapse=""))
     colorpal = rainbow(n_rigidity+3)[1:n_rigidity]
     lwidths = rep(2,n_rigidity) # (rigidity_grid==150)*1.5 + 1
     for (j in 1:n_rigidity){
@@ -258,7 +258,7 @@ optimize_R = function(object,
     plot(c(0,0), ylim=c(0,max(FNR_grid*100)),xlim=c(0.95,max(segment_length_grid)*2),
          type="n", xlab="Segment_length",ylab="FNR [%]",log="x")
     abline(h=0,col="grey")
-    title(paste(c("FNR (segment_length,rigidity) , coverage = ",coverage),collapse=""))
+    title(paste(c("FNR (segment_length,rigidity) , coverage = ",average_coverage),collapse=""))
     colorpal = rainbow(n_rigidity+3)[1:n_rigidity]
     lwidths = rep(2,n_rigidity) # (rigidity_grid==150)*1.5 + 1
     for (j in 1:n_rigidity){
@@ -285,7 +285,7 @@ optimize_R = function(object,
     pdf(file.path(savedir, paste("Segmentation_error_plot_",appendix,".pdf",sep="")),width=8,height=6)
     par(mar=c(5, 5.5, 4, 2.5) + 0.1)
     plot(rigidity_grid,transform(upper_SEplus), log="x",
-         main=paste("Segmentation errors per sample\ncoverage = ",coverage,sep=""),
+         main=paste("Segmentation errors per sample\ncoverage = ",average_coverage,sep=""),
          xlab="Rigidity",
          ylab="",
          yaxt="n",
@@ -335,7 +335,7 @@ optimize_R = function(object,
     # save the results file
     resultsfile = file.path(savedir, paste("Simulation_results_",appendix,".RData",sep=""))
     save(
-      coverage,
+      average_coverage,
       rigidity_grid,
       upper_SEplus,
       lower_SEplus,
