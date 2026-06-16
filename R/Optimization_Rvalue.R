@@ -29,7 +29,6 @@ optimize_R = function(object,
                       seed = 1L,
                       n_obs = 1e4,
                       method = c("exact", "mc"),
-                      ell_eff = NULL,
                       save_it = FALSE,
                       savedir = NULL ){
   if(save_it & is.null(savedir)) stop("Please if you want to save the plots and results specify the path in savedir.\n")
@@ -83,23 +82,6 @@ optimize_R = function(object,
   transition_pars = picked_parameters$transition  # this is on the absolute scale
   emission_pars = extract_emissions(picked_parameters)
 
-  # Marker-dependence correction (method = "exact" only). Real per-marker evidence
-  # is autocorrelated (regional/clustered errors), so the iid FPR/FNR are
-  # systematically optimistic and the suggested r comes out too small. The block
-  # correction u -> u/ell_eff (in exactFPR/exactFNR) compensates.
-  #   ell_eff = NULL (default): auto-estimate as the per-block MEDIAN over homozygous
-  #     blocks pooled across samples -- but ONLY for multi-sample objects. A SINGLE
-  #     sample defaults to ell_eff = 1 (NO correction), because a robust estimate
-  #     needs many blocks across samples and the suggestion is sensitive to ell_eff.
-  #   numeric: use as given (override).
-  # The corrected r is approximate (inherits ell_eff's regional heterogeneity and
-  # the SE+ cliff); validate with an empirical r sweep. See estimate_ell_eff().
-  if (is.null(ell_eff))
-    ell_eff = if (length(myDat@Viterbi) >= 2) estimate_ell_eff(myDat, emission_pars) else 1
-  cat("Effective correlation length (ell_eff): ", ell_eff,
-      if (ell_eff <= 1) " -- no marker-dependence correction\n"
-      else " -- block correction applied; suggested r is approximate, validate by sweep\n", sep = "")
-
   # Chromosome lengths for the genome length / chromosome count. Prefer the value
   # stored on @info (set by generateObject), but fall back to the lengths carried
   # by the Viterbi GRanges for objects built before that slot was populated.
@@ -147,8 +129,8 @@ optimize_R = function(object,
   if (method == "exact") {
     em    <- emission_grid(average_coverage, emission_pars)
     logT  <- log(transition_pars)
-    FPRfun <- function(u, r) exactFPR(u, r, em, logT, ell_eff)
-    FNRfun <- function(u, r) exactFNR(u, r, em, logT, ell_eff)
+    FPRfun <- function(u, r) exactFPR(u, r, em, logT)
+    FNRfun <- function(u, r) exactFNR(u, r, em, logT)
   } else {
     Deltas = construct_Delta_table(n_obs = n_obs, # Monte Carlo draws for the FPR/FNR estimate (manuscript Text S4 eq. 53 uses N = 10^4 = the default; the original call wrongly passed the *biological sample* count, ~3, so the rates were estimated from 3 draws. Raise n_obs when the FPR is tiny -- e.g. high coverage / confident emissions -- and 1e4 draws leave SE_total noisy and the suggested r seed-unstable.)
                                    max_segment_length = max_segment_length, # length of the largest segment to be evaluated
@@ -545,32 +527,17 @@ tilt_tail = function(groups, thr, strict, H = 0.05){
   min(1, max(0, s))
 }
 
-#' Marker-dependence (block) correction. Real per-marker increments are
-#' autocorrelated, so a window of L markers carries only ~L/ell_eff independent
-#' pieces of evidence. Replace the L iid single-marker increments by L/ell_eff
-#' independent SUPER-increments, each = ell_eff * X; this preserves the mean (L*mu)
-#' and the dependence-inflated variance (L*ell_eff*sigma^2) of the windowed sum.
-#' ell_eff = 1 is the identity (no correction). See estimate_ell_eff().
-#' @keywords internal
-#' @noRd
-block_group = function(w, x, L, ell_eff = 1){
-  if (ell_eff <= 1) return(list(w = w, x = x, L = L))
-  m = max(1L, as.integer(round(L / ell_eff)))
-  list(w = w, x = x * (L / m), L = m)
-}
-
 #' Exact paired FPR(u; r): probability a length-u flanking region is falsely
-#' broken by inserting a central segment. em = emission_grid(); logT = log(transition);
-#' ell_eff applies the marker-dependence block correction (1 = none).
+#' broken by inserting a central segment. em = emission_grid(); logT = log(transition).
 #' @keywords internal
 #' @noRd
-exactFPR = function(u, r, em, logT, ell_eff = 1, states = c("mat","het","pat")){
+exactFPR = function(u, r, em, logT, states = c("mat","het","pat")){
   if (u < r) return(0)
   m = matrix(0, 3, 3, dimnames = list(states, states))
   for (fl in states) for (ce in setdiff(states, fl)){
     const = logT[fl,ce] + logT[ce,fl] - 2*logT[fl,fl] + (u - r)*(logT[fl,fl] - logT[ce,ce])
     x = as.vector(em$lp[ce,,]) - as.vector(em$lp[fl,,])   # per-marker LLR increment (paired)
-    m[fl,ce] = tilt_tail(list(block_group(as.vector(em$probs[fl,,]), x, u, ell_eff)), -const, TRUE)
+    m[fl,ce] = tilt_tail(list(list(w = as.vector(em$probs[fl,,]), x = x, L = u)), -const, TRUE)
   }
   0.25*sum(m["mat",]) + 0.25*sum(m["pat",]) + 0.5*sum(m["het",])
 }
@@ -580,75 +547,21 @@ exactFPR = function(u, r, em, logT, ell_eff = 1, states = c("mat","het","pat")){
 #' segment plus the length-(r-u) flanking remainder), handled as two groups.
 #' @keywords internal
 #' @noRd
-exactFNR = function(u, r, em, logT, ell_eff = 1, states = c("mat","het","pat")){
+exactFNR = function(u, r, em, logT, states = c("mat","het","pat")){
   m = matrix(NA_real_, 3, 3, dimnames = list(states, states))
   for (fl in states) for (ce in setdiff(states, fl)){
     const = logT[fl,ce] + logT[ce,fl] - 2*logT[fl,fl]
     xfc   = as.vector(em$lp[fl,,]) - as.vector(em$lp[ce,,])
     if (u >= r){
       thr = const + (u - r)*(logT[fl,fl] - logT[ce,ce])
-      m[fl,ce] = tilt_tail(list(block_group(as.vector(em$probs[ce,,]), xfc, u, ell_eff)), thr, FALSE)
+      m[fl,ce] = tilt_tail(list(list(w = as.vector(em$probs[ce,,]), x = xfc, L = u)), thr, FALSE)
     } else {
-      g = list(block_group(as.vector(em$probs[ce,,]), xfc, u,     ell_eff),
-               block_group(as.vector(em$probs[fl,,]), xfc, r - u, ell_eff))
+      g = list(list(w = as.vector(em$probs[ce,,]), x = xfc, L = u),
+               list(w = as.vector(em$probs[fl,,]), x = xfc, L = r - u))
       m[fl,ce] = tilt_tail(g, const, FALSE)
     }
   }
   (1/3)*m["mat","het"] + (1/3)*m["pat","het"] + (1/6)*sum(m["het", c("pat","mat")])
-}
-
-#' Estimate the effective correlation length ell_eff for the marker-dependence
-#' correction in optimize_R(method = "exact"). Real per-marker log-likelihood-ratio
-#' increments are autocorrelated (regional/clustered errors: coverage structure,
-#' mapping artifacts), so the iid FPR/FNR are systematically optimistic; ell_eff =
-#' 1 + 2*sum_k rho_k is the variance inflation of cumulative evidence. Estimated as
-#' the per-block MEDIAN over long homozygous Viterbi blocks pooled across ALL
-#' samples (median is robust to high-correlation outlier regions, e.g. pericentromeric).
-#' Returns 1 (NO correction) for a single sample or when fewer than `min_blocks`
-#' long blocks are available -- a robust estimate needs many blocks across samples.
-#' NB the resulting rigidity is approximate (it inherits ell_eff's regional
-#' heterogeneity and the SE+ cliff's sensitivity); validate with an empirical r sweep.
-#'
-#' @param object a fitted RTIGER object (uses @Viterbi states + P1.Allele.Count/total).
-#' @param emissions named (mat,het,pat) emission list, e.g. extract_emissions(object@params).
-#' @param Lmin minimum block length in informative markers (default 200).
-#' @param min_blocks minimum number of qualifying blocks to attempt an estimate (default 5).
-#' @return numeric effective correlation length (>= 1; 1 means no correction).
-#' @export estimate_ell_eff
-estimate_ell_eff = function(object, emissions, Lmin = 200L, min_blocks = 5L){
-  if (length(object@Viterbi) < 2) return(1)            # single sample -> no correction
-  Kmax = 80L
-  logpsi = function(st, k, n) dbbinom(k, size = n, alpha = emissions[[st]]["alpha"],
-                                      beta = emissions[[st]]["beta"], log = TRUE)
-  blocks = list()
-  for (g in object@Viterbi){
-    chr <- as.character(GenomeInfoDb::seqnames(g))
-    st  <- as.character(g$Viterbi); k <- g$P1.Allele.Count; n <- g$total
-    for (ch in unique(chr)){
-      ii <- which(chr == ch); sti <- st[ii]; ki <- k[ii]; ni <- n[ii]
-      rr <- rle(sti); ends <- cumsum(rr$lengths); starts <- ends - rr$lengths + 1
-      for (b in seq_along(rr$values)){
-        s <- rr$values[b]
-        if (!(s %in% c("mat","pat")) || rr$lengths[b] < Lmin) next       # homozygous blocks only
-        jj <- starts[b]:ends[b]; kk <- ki[jj]; nn <- ni[jj]
-        keep <- nn > 0; kk <- kk[keep]; nn <- nn[keep]
-        if (length(kk) < Lmin) next
-        X <- logpsi("het", kk, nn) - logpsi(s, kk, nn); X[!is.finite(X)] <- 0
-        blocks[[length(blocks) + 1]] <- X
-      }
-    }
-  }
-  if (length(blocks) < min_blocks) return(1)
-  perblock <- vapply(blocks, function(X){                  # per-block ell_eff = 1 + 2*sum rho_k (initial positive)
-    Xc <- X - mean(X); L <- length(Xc); g0 <- sum(Xc^2); if (g0 == 0) return(1)
-    s <- 0
-    for (kk in 1:Kmax){ if (L <= kk) break
-      rk <- sum(Xc[1:(L-kk)] * Xc[(1+kk):L]) / g0
-      if (is.na(rk) || rk <= 0) break
-      s <- s + rk }
-    1 + 2*s
-  }, numeric(1))
-  stats::median(perblock)
 }
 
 #' Compute the False positiv rate values
